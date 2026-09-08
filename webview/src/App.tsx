@@ -532,6 +532,57 @@ const App = () => {
   // ("model fable" / "No available channel"). `claudeSdkMeetsMinimum` is `undefined`
   // until the backend reports status or when the SDK isn't installed — never warn
   // in those cases to avoid false positives.
+  // --- G0: 查找 AI 修改历史 → 新 tab 载入会话 + 定位到命中消息 ---
+  const pendingFocusMessageIdRef = useRef<string | null>(null);
+
+  // 新 tab 前端就绪后由 Java 注入：载入历史会话 + 记录待定位消息
+  useEffect(() => {
+    const handler = (json: string) => {
+      try {
+        const req = JSON.parse(json) as { sessionId: string; provider: string; messageId?: string };
+        if (req.messageId) {
+          pendingFocusMessageIdRef.current = req.messageId;
+        }
+        loadHistorySession(req.sessionId, req.provider);
+      } catch {
+        // 忽略非法 JSON
+      }
+    };
+    window.openHistorySession = handler;
+    const pending = window.__pendingOpenHistorySession;
+    if (pending) {
+      handler(pending);
+      window.__pendingOpenHistorySession = undefined;
+    }
+    return () => {
+      if (window.openHistorySession === handler) {
+        window.openHistorySession = undefined;
+      }
+    };
+  }, [loadHistorySession]);
+
+  // 会话载入后定位到命中消息（滚动 + 高亮），只定位一次后清空标记
+  useEffect(() => {
+    const targetId = pendingFocusMessageIdRef.current;
+    if (!targetId) return;
+    // 等 updateMessages 推送到 DOM 后再定位
+    const timer = setTimeout(() => {
+      const container = messagesContainerRef.current;
+      if (!container) return;
+      const nodes = container.querySelectorAll<HTMLElement>('[data-message-id], [data-message-uuid]');
+      for (const node of nodes) {
+        if (node.dataset.messageId === targetId || node.dataset.messageUuid === targetId) {
+          node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          node.classList.add('ai-focus-highlight');
+          window.setTimeout(() => node.classList.remove('ai-focus-highlight'), 3000);
+          pendingFocusMessageIdRef.current = null;
+          break;
+        }
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [messages, currentSessionId, messagesContainerRef]);
+
   const fableSdkWarningShownRef = useRef(false);
   useEffect(() => {
     if (

@@ -782,6 +782,9 @@ export const MessageItem = memo(function MessageItem({
       className={`message ${message.type}${isLast ? ' is-last-message' : ''}${isProviderNotConfigured ? ' provider-not-configured' : ''}`}
       ref={anchorRefCallback}
       data-message-anchor-id={message.type === 'user' ? messageKey : undefined}
+      data-message-id={(message.raw as unknown as { message?: { id?: string } } | undefined)?.message?.id
+        ?? (typeof message.id === 'string' ? message.id : undefined)}
+      data-message-uuid={(message.raw as unknown as { uuid?: string } | undefined)?.uuid}
     >
       {/* Timestamp and copy button for user messages */}
       {message.type === 'user' && message.timestamp && (

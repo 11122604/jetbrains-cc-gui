@@ -35,3 +35,13 @@
 
 // 响应式适配
 @import "less/responsive.less";
+
+// G0: 查找 AI 修改历史 —— 命中消息高亮闪烁
+.ai-focus-highlight {
+  animation: aiFocusPulse 1.6s ease-in-out 2;
+}
+@keyframes aiFocusPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(51, 122, 254, 0.45); }
+  50%  { box-shadow: 0 0 0 6px rgba(51, 122, 254, 0.25); }
+  100% { box-shadow: 0 0 0 0 rgba(51, 122, 254, 0); }
+}

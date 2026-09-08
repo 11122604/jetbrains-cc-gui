@@ -88,6 +88,9 @@
         <!-- Pre-extract AI Bridge on project open to avoid EDT freeze -->
         <postStartupActivity implementation="com.github.claudecodegui.startup.BridgePreloader"/>
 
+        <!-- G0: 项目启动后台预热代码片段索引，供「查找 AI 修改历史」搜索 -->
+        <postStartupActivity implementation="com.github.claudecodegui.startup.SnippetIndexPreloader"/>
+
         <!-- Cleanup old ai-bridge cache when plugin version changes -->
         <postStartupActivity implementation="com.github.claudecodegui.startup.PluginUpdateListener"/>
 
@@ -121,6 +124,14 @@
             <add-to-group group-id="EditorPopupMenu"
                            anchor="after"
                            relative-to-action="ClaudeCodeGUI.SendSelectionToTerminalAction"/>
+        </action>
+
+        <!-- Find AI Edit History Action (G0) -->
+        <action id="ClaudeCodeGUI.FindAiHistoryAction"
+                class="com.github.claudecodegui.action.editor.FindAiHistoryAction">
+            <add-to-group group-id="EditorPopupMenu"
+                           anchor="after"
+                           relative-to-action="ClaudeCodeGUI.CopySelectionReferenceAction"/>
         </action>
 
         <!-- Quick Fix with Claude Action -->

@@ -779,6 +779,10 @@ interface Window {
    */
   onContentDelta?: (delta: string) => void;
 
+  /** G0: Java 在新 tab 注入，载入指定历史会话并定位到命中消息 */
+  openHistorySession?: (json: string) => void;
+  __pendingOpenHistorySession?: string;
+
   /**
    * Thinking delta callback - called when a thinking delta is received
    * @param delta The thinking delta string

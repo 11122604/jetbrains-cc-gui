@@ -651,6 +651,13 @@ if (typeof window !== 'undefined' && !window.onUsageUpdate) {
   };
 }
 
+// Java may inject "open history session in new tab" (G0) before React mounts.
+if (typeof window !== 'undefined' && !window.openHistorySession) {
+  window.openHistorySession = (json: string) => {
+    window.__pendingOpenHistorySession = json;
+  };
+}
+
 // Java can answer frontend_ready before React's callback effect mounts. Keep
 // the authoritative recovery snapshot until the real callback is registered.
 if (typeof window !== 'undefined' && !window.applyBackendTabState) {
