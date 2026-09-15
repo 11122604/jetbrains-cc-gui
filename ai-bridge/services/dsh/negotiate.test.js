@@ -64,6 +64,12 @@ async function stubHost(mode, options = {}) {
       const url = new URL(req.url, 'http://127.0.0.1');
       requests.push({ path: url.pathname, cookie: req.headers.cookie || '', body });
       if (url.pathname === '/') {
+        if (options.noLaunchCookie) {
+          // A consumed one-shot token: the host answers but issues no cookie.
+          res.writeHead(303, { location: '/chat' });
+          res.end();
+          return;
+        }
         res.writeHead(303, { 'set-cookie': 'dsh-auth-stub=v1.a.b; Path=/; HttpOnly' });
         res.end();
         return;
@@ -224,6 +230,22 @@ test('cookieFromLaunchLog gives up when the log never carries a token', async ()
     await cookieFromLaunchLog('http://127.0.0.1:3080', logFile, { timeoutMs: 400 }),
     null
   );
+});
+test('cookieFromLaunchLog abandons a token whose exchange issues no cookie', async () => {
+  const host = await stubHost('modern', { noLaunchCookie: true });
+  const logFile = join(mkdtempSync(join(tmpdir(), 'dsh-log-')), 'dsh-web.log');
+  writeFileSync(logFile, `dsh web: ${host.origin}/?token=consumed-token\n`);
+  try {
+    const started = Date.now();
+    const cookie = await cookieFromLaunchLog(host.origin, logFile, { timeoutMs: 30_000 });
+    // A dead one-shot token must fall through to the credential store at
+    // once, not be re-fetched every 250ms for the whole window.
+    assert.equal(cookie, null);
+    assert.ok(Date.now() - started < 5_000, 'must not poll a dead token');
+    assert.equal(host.requests.length, 1, 'the dead token is exchanged exactly once');
+  } finally {
+    await host.close();
+  }
 });
 
 test('acquireCookie prefers the launch log over the credential store', async () => {

@@ -601,10 +601,18 @@ async function answerWaterfall(client, clientId, eventId, value, log) {
 /**
  * Settle a modern `approval/request` waterfall. The decision is the bare
  * `ApprovalOutcome` string — `'allowed-once'` is the only granting value.
+ *
+ * `isWithdrawn` reports a host-side `cancel` for this eventId: a withdrawn
+ * waterfall must neither prompt the user nor be answered, because the host's
+ * event generation that would consume the answer is already gone.
  */
-export async function bridgeModernApproval(client, clientId, event, log = () => {}) {
+export async function bridgeModernApproval(client, clientId, event, log = () => {}, isWithdrawn = () => false) {
   const request = event && event.request && typeof event.request === 'object' ? event.request : {};
   const toolName = approvalToolName(request);
+  if (isWithdrawn()) {
+    log(`[dsh] approval ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
   try {
     const allowed = await requestPermissionFromJava(toolName, {
       tool: toolName,
@@ -612,9 +620,21 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
       approvalId: event.eventId,
       input: request,
     });
-    await answerWaterfall(client, clientId, event.eventId, allowed ? 'allowed-once' : 'rejected', log);
-    log(`[dsh] approval ${event.eventId} ${allowed ? 'allowed-once' : 'rejected'}`);
-    return true;
+    if (isWithdrawn()) {
+      log(`[dsh] approval ${event.eventId} withdrawn; the answer is not posted`);
+      return false;
+    }
+    const answered = await answerWaterfall(
+      client,
+      clientId,
+      event.eventId,
+      allowed ? 'allowed-once' : 'rejected',
+      log
+    );
+    if (answered) {
+      log(`[dsh] approval ${event.eventId} ${allowed ? 'allowed-once' : 'rejected'}`);
+    }
+    return answered;
   } catch (error) {
     log(`[dsh] approval answer failed: ${error.message}`);
     try {
@@ -631,15 +651,25 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
  * Settle a modern `user-questions/request` waterfall with the
  * `{answers:[{id, selected, custom?}]}` shape the asker's output schema requires.
  */
-export async function bridgeModernQuestion(client, clientId, event, log = () => {}) {
+export async function bridgeModernQuestion(client, clientId, event, log = () => {}, isWithdrawn = () => false) {
   const questions = questionRows(event && event.request);
+  if (isWithdrawn()) {
+    log(`[dsh] question ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
   try {
     const answers = await requestAskUserQuestionAnswers({ questions });
-    await answerWaterfall(client, clientId, event.eventId, {
+    if (isWithdrawn()) {
+      log(`[dsh] question ${event.eventId} withdrawn; the answer is not posted`);
+      return false;
+    }
+    const answered = await answerWaterfall(client, clientId, event.eventId, {
       answers: mapQuestionAnswers(answers),
     }, log);
-    log('[dsh] question answered');
-    return true;
+    if (answered) {
+      log('[dsh] question answered');
+    }
+    return answered;
   } catch (error) {
     log(`[dsh] question answer failed: ${error.message}`);
     try {

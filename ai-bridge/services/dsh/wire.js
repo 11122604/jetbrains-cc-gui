@@ -17,8 +17,8 @@
  *                           cookie minted by `dsh web`.
  *
  * The dialect is negotiated against the live host (never inferred from a
- * version string — an adopted host never reports one) and cached in the
- * supervisor state file; `DSH_WIRE` pins it when negotiation guesses wrong.
+ * version string — an adopted host never reports one); the negotiation runs once per connection —
+ * and `collectDshStatus` probes too. `DSH_WIRE` pins it when negotiation guesses wrong.
  */
 
 import { createHash, createHmac } from 'node:crypto';

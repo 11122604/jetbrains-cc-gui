@@ -166,6 +166,10 @@ function createTurnState() {
     pendingBridges: new Set(),
     /** Modern hosts route waterfall answers by this per-generation id. */
     clientId: null,
+    /** $events waterfalls the host withdrew before they were answered. */
+    withdrawnWaterfalls: new Set(),
+    /** eventId → tracked bridge promise, so a cancel can release the drain. */
+    waterfallBridges: new Map(),
   };
 }
 
@@ -205,6 +209,7 @@ function trackBridge(turn, bridge, label) {
   const tracked = bridge.catch((error) => logDebug(`${label} bridge failed: ${error.message}`));
   turn.pendingBridges.add(tracked);
   tracked.finally(() => turn.pendingBridges.delete(tracked));
+  return tracked;
 }
 
 function handleTurnEvent(client, sessionId, turn, event) {
@@ -363,18 +368,48 @@ function subscribeModernStreams(client, sessionId, turn) {
           turn.clientId = instruction.clientId;
           break;
         case 'approval-request':
-          trackBridge(
-            turn,
-            bridgeModernApproval(client, turn.clientId, instruction, logDebug),
-            'approval'
+          turn.waterfallBridges.set(
+            instruction.eventId,
+            trackBridge(
+              turn,
+              bridgeModernApproval(
+                client,
+                turn.clientId,
+                instruction,
+                logDebug,
+                () => turn.withdrawnWaterfalls.has(instruction.eventId)
+              ),
+              'approval'
+            )
           );
           break;
         case 'question-request':
-          trackBridge(
-            turn,
-            bridgeModernQuestion(client, turn.clientId, instruction, logDebug),
-            'question'
+          turn.waterfallBridges.set(
+            instruction.eventId,
+            trackBridge(
+              turn,
+              bridgeModernQuestion(
+                client,
+                turn.clientId,
+                instruction,
+                logDebug,
+                () => turn.withdrawnWaterfalls.has(instruction.eventId)
+              ),
+              'question'
+            )
           );
+          break;
+        case 'cancel':
+          // The host withdrew the waterfall: mark it so a late user answer is
+          // not posted, and release the drain — the bridge promise keeps
+          // running in the background until the Java-side prompt resolves
+          // (there is no IPC to dismiss that dialog from here).
+          turn.withdrawnWaterfalls.add(instruction.eventId);
+          if (turn.waterfallBridges.has(instruction.eventId)) {
+            turn.pendingBridges.delete(turn.waterfallBridges.get(instruction.eventId));
+            turn.waterfallBridges.delete(instruction.eventId);
+          }
+          logDebug(`[dsh] waterfall ${instruction.eventId} withdrawn by the host`);
           break;
         default:
           break;

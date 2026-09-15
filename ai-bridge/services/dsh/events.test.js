@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   DshGoalSettlement,
+  bridgeModernApproval,
+  bridgeModernQuestion,
   peekMuxSessionId,
   projectFollowFrame,
   projectMuxFrame,
@@ -198,4 +200,24 @@ test('projectRemoteEventFrame distinguishes ready, waterfalls and cancel', () =>
   assert.equal(projectRemoteEventFrame({ type: 'waterfall', event: 'other/event', eventId: 'e' }), null);
   assert.equal(projectRemoteEventFrame({ type: 'ready' }), null);
   assert.equal(projectRemoteEventFrame(undefined), null);
+});
+test('modern bridges skip a waterfall the host already withdrew', async () => {
+  const posted = [];
+  const client = {
+    async answerRemoteEvent(...args) {
+      posted.push(args);
+    },
+  };
+  const withdrawn = () => true;
+  assert.equal(
+    await bridgeModernApproval(client, 'c1', { eventId: 'e1', request: {} }, () => {}, withdrawn),
+    false
+  );
+  assert.equal(
+    await bridgeModernQuestion(client, 'c1', { eventId: 'e2', request: {} }, () => {}, withdrawn),
+    false
+  );
+  // A withdrawn waterfall must never reach $events/result — and must not
+  // prompt the user at all (the pre-check runs before the Java IPC).
+  assert.equal(posted.length, 0);
 });

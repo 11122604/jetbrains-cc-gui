@@ -32,6 +32,15 @@ import { resolveDshHome } from './wire.js';
 
 const SPAWN_READY_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 20_000;
 const SPAWN_POLL_MS = 250;
+/**
+ * Cap on one negotiation pass waiting for a spawned host's launch URL. The
+ * host prints the URL before its auth fence answers, so by probe time it is
+ * already in the log; a longer wait only helps a log that is slow to flush,
+ * and `waitForDescribe` retries the whole pass anyway. Remembered logs can
+ * hold a consumed one-shot token, which must not stall an adopt or a status
+ * poll for the full default window.
+ */
+const NEGOTIATE_LAUNCH_TIMEOUT_MS = 5_000;
 const VERSION_PROBE_TIMEOUT_MS = 5_000;
 
 function logDebug(...args) {
@@ -327,6 +336,7 @@ async function negotiateHost(settings, logFile) {
     dshHome: settings.dshHome,
     dialect: settings.wire,
     log: logDebug,
+    launchTimeoutMs: NEGOTIATE_LAUNCH_TIMEOUT_MS,
   });
   return {
     origin,

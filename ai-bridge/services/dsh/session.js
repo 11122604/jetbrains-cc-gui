@@ -172,6 +172,16 @@ export async function listSessions(client) {
  * per session for the follow-up pages.
  */
 const historyCursors = new Map();
+/** Bound on cached follow cursors; the oldest entry drops first (Map order). */
+const HISTORY_CURSOR_CACHE_MAX = 64;
+
+function rememberHistoryCursor(key, cursor) {
+  historyCursors.delete(key);
+  if (historyCursors.size >= HISTORY_CURSOR_CACHE_MAX) {
+    historyCursors.delete(historyCursors.keys().next().value);
+  }
+  historyCursors.set(key, cursor);
+}
 
 function historyCursorKey(client, sessionId) {
   return `${client && client.origin ? client.origin : ''}:${sessionId}`;
@@ -232,18 +242,26 @@ async function modernHistoryPage(client, sessionId, maxMessages, beforeSeq) {
   const cachedCursor = historyCursors.get(key);
   if (beforeSeq === null || beforeSeq === undefined || cachedCursor === undefined) {
     const snapshot = await openFollowSnapshot(client, sessionId, maxMessages);
-    historyCursors.set(key, snapshot.cursor);
+    rememberHistoryCursor(key, snapshot.cursor);
     return {
       events: snapshot.records,
       hasMore: snapshot.hasMore === true,
     };
   }
-  const value = await client.call('session.page', {
-    address: { kind: 'session', sessionId },
-    throughSeq: cachedCursor,
-    ...(Number.isInteger(beforeSeq) ? { beforeSeq } : {}),
-    ...(Number.isInteger(maxMessages) && maxMessages > 0 ? { maxMessages } : {}),
-  });
+  let value;
+  try {
+    value = await client.call('session.page', {
+      address: { kind: 'session', sessionId },
+      throughSeq: cachedCursor,
+      ...(Number.isInteger(beforeSeq) ? { beforeSeq } : {}),
+      ...(Number.isInteger(maxMessages) && maxMessages > 0 ? { maxMessages } : {}),
+    });
+  } catch (error) {
+    // A stale cursor (host restarted, session compacted) would fail every
+    // later page the same way; drop it so the next read re-snapshots.
+    historyCursors.delete(key);
+    throw error;
+  }
   const records = Array.isArray(value && value.records) ? value.records : [];
   return {
     events: records.map(unwrapHistoryRecord),

@@ -86,6 +86,11 @@ export async function cookieFromLaunchLog(origin, logFile, options = {}) {
         if (parsed) {
           return `${parsed.name}=${parsed.value}`;
         }
+        // The host answered but issued no cookie: the one-shot token is
+        // consumed or invalid, so retrying the same URL cannot succeed.
+        // Bail out and let the caller fall back to the credential store
+        // instead of polling a dead token for the whole window.
+        return null;
       } catch {
         // The server may not accept connections yet; keep polling the log.
       }
@@ -155,17 +160,18 @@ function authFailureMessage(origin) {
  * @param {string} [options.dshHome] `$DSH_HOME` of the running host
  * @param {string} [options.dialect] pinned dialect (`DSH_WIRE`)
  * @param {string} [options.cookie] cookie already known for this host
+ * @param {number} [options.launchTimeoutMs] cap on waiting for a spawned host's launch URL
  * @param {Function} [options.log]
  * @returns {Promise<{ client: DshHostClient, dialect: string, cookie: string|null, describe: object }>}
  */
 export async function negotiateWire(options) {
-  const { origin, logFile, dshHome, cookie: knownCookie } = options;
+  const { origin, logFile, dshHome, cookie: knownCookie, launchTimeoutMs } = options;
   const log = typeof options.log === 'function' ? options.log : defaultLog;
   const pinned = normalizeDialectId(options.dialect);
 
   if (pinned) {
     const cookie = requiresBrowserSession(pinned)
-      ? knownCookie || await acquireCookie({ origin, logFile, dshHome, log })
+      ? knownCookie || await acquireCookie({ origin, logFile, dshHome, log, launchTimeoutMs })
       : null;
     if (requiresBrowserSession(pinned) && !cookie) {
       throw new DshTransportError(authFailureMessage(origin));
@@ -192,7 +198,7 @@ export async function negotiateWire(options) {
   }
 
   // Observation step 2: a modern host. Authenticate, then verify.
-  const cookie = knownCookie || await acquireCookie({ origin, logFile, dshHome, log });
+  const cookie = knownCookie || await acquireCookie({ origin, logFile, dshHome, log, launchTimeoutMs });
   if (!cookie) {
     throw new DshTransportError(authFailureMessage(origin));
   }

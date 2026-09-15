@@ -259,9 +259,3 @@ export class DshHostClient {
     return parseServerResponse(text, rpcId, wireMethod);
   }
 }
-
-/** Probe `host.describe` on a legacy host; resolves with the describe value. */
-export async function probeDescribe(origin, timeoutMs = DESCRIBE_TIMEOUT_MS) {
-  const client = new DshHostClient(origin);
-  return client.call('host.describe', {}, timeoutMs);
-}
