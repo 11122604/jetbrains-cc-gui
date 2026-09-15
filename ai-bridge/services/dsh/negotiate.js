@@ -35,6 +35,12 @@ import { DshHostClient, DshHttpError, DshTransportError } from './host.js';
 /** How long a freshly spawned host may take to print its launch URL. */
 const LAUNCH_URL_TIMEOUT_MS = 45_000;
 const LAUNCH_URL_POLL_MS = 250;
+/**
+ * Cap on one launch-token exchange. Every other probe on this path is bounded,
+ * and without this a process squatting on the dsh port (accepts TCP, never
+ * answers HTTP) would hang negotiation past the whole launch window.
+ */
+const LAUNCH_EXCHANGE_TIMEOUT_MS = 5_000;
 
 function defaultLog() {
   // Negotiation details are diagnostics, never protocol output.
@@ -81,7 +87,10 @@ export async function cookieFromLaunchLog(origin, logFile, options = {}) {
     const launchUrl = launchUrlFromText(text, origin);
     if (launchUrl) {
       try {
-        const response = await fetch(launchUrl, { redirect: 'manual' });
+        const response = await fetch(launchUrl, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(LAUNCH_EXCHANGE_TIMEOUT_MS),
+        });
         const parsed = parseSetCookie(firstSetCookie(response.headers));
         if (parsed) {
           return `${parsed.name}=${parsed.value}`;

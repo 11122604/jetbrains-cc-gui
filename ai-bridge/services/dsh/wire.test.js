@@ -115,6 +115,9 @@ test('launchUrlFromText extracts the tokenized loopback URL', () => {
 });
 
 test('signingSecretFromCredentials reads the browser-session record', () => {
+  // Obviously synthetic 32-byte secret (base64url of 32 zero bytes) — fixtures
+  // must never look like a copy of someone's live ~/.dsh/.credentials.yaml.
+  const fakeSecret = Buffer.alloc(32, 0).toString('base64url');
   const yaml = [
     'version: 1',
     'refs:',
@@ -124,14 +127,14 @@ test('signingSecretFromCredentials reads the browser-session record', () => {
     '    kind: grant',
     '    payload:',
     '      version: 1',
-    '      secret: k4elfV_f9ThPYKiuLRSmVgo7Fqg-cP5Y7lzIfEjRlMY',
+    `      secret: ${fakeSecret}`,
     '  other/record:',
     '    kind: grant',
     '',
   ].join('\n');
   assert.equal(
     signingSecretFromCredentials(yaml),
-    'k4elfV_f9ThPYKiuLRSmVgo7Fqg-cP5Y7lzIfEjRlMY'
+    fakeSecret
   );
   assert.equal(signingSecretFromCredentials('version: 1\nrecords: {}\n'), null);
   assert.equal(signingSecretFromCredentials(''), null);

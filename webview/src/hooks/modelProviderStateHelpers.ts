@@ -71,8 +71,14 @@ export function resolveProviderPermissionMode(
 ): PermissionMode {
   switch (providerId) {
     case 'codex': {
-      const mode = normalizeCliPermissionMode(modes.codex, providerId);
-      return mode === 'auto' && codexSdkMeetsMinimum === false ? 'default' : mode;
+      // Check for 'auto' BEFORE normalizeCliPermissionMode, which coerces
+      // 'auto' → 'default' for every CLI provider — after normalization the
+      // SDK-floor check below would be dead code and a saved 'auto' would be
+      // silently demoted on every provider switch.
+      if (modes.codex === 'auto') {
+        return codexSdkMeetsMinimum === false ? 'default' : 'auto';
+      }
+      return normalizeCliPermissionMode(modes.codex, providerId);
     }
     case 'grok': return normalizeCliPermissionMode(modes.grok, providerId);
     case 'kimi': return normalizeCliPermissionMode(modes.kimi, providerId);

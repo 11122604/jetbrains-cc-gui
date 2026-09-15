@@ -63,6 +63,7 @@ specs
 CLAUDE.md
 .idea/copilot*
 **/.nvmrc
+.github/*.md
 !.github/PULL_REQUEST_TEMPLATE.md
 webview/src/version/version.ts
 AGENTS.md
