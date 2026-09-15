@@ -45,6 +45,10 @@ public class SessionLifecycleManager {
             return null;
         }
 
+        default com.github.claudecodegui.provider.zcode.ZcodeSDKBridge getZcodeSDKBridge() {
+            return null;
+        }
+
         Map<String, MarkerCliBridge> getCliBridges();
 
         ClaudeSession getSession();
@@ -462,6 +466,11 @@ public class SessionLifecycleManager {
         if (host.getGrokSDKBridge() != null) {
             host.getGrokSDKBridge().resetPersistentRuntime(oldEpoch);
             host.getGrokSDKBridge().shutdownDaemon();
+        }
+
+        if (host.getZcodeSDKBridge() != null) {
+            host.getZcodeSDKBridge().resetPersistentRuntime(oldEpoch);
+            host.getZcodeSDKBridge().shutdownDaemon();
         }
 
         LOG.info("[Lifecycle] Released persistent provider resources for " + reason

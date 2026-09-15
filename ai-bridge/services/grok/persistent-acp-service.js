@@ -148,7 +148,7 @@ async function cleanupStaleRuntimes() {
       return now - (runtime.lastUsedAt || runtime.createdAt || now) > GROK_RUNTIME_MAX_IDLE_MS;
     });
     for (const runtime of stale) {
-      console.log(`[GROK-DAEMON] disposing stale runtime (idle ${Math.round((now - runtime.lastUsedAt) / 1000)}s)`);
+      console.log(`[GROK-DAEMON] disposing stale runtime (idle ${Math.round((now - (runtime.lastUsedAt || runtime.createdAt || now)) / 1000)}s)`);
       await disposeRuntime(runtime);
     }
   } catch (error) {
