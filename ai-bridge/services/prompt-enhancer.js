@@ -465,7 +465,14 @@ async function enhancePromptWithClaudeAsk(originalPrompt, systemPrompt, model, c
 
   const clientOpts = {
     baseURL: config.baseUrl || undefined,
-    defaultHeaders: { 'x-app': 'cli', 'User-Agent': getCliUserAgent() },
+    // Some relays (e.g. OpenCode Go reached through a local proxy) route requests by
+    // session and answer 400 MissingSessionID without a session header. This call has no
+    // real session to forward, and the value only has to be non-empty to satisfy them.
+    defaultHeaders: {
+      'x-app': 'cli',
+      'User-Agent': getCliUserAgent(),
+      'x-opencode-session': 'ccgui-prompt-enhancer',
+    },
   };
   if (config.authType === 'auth_token') {
     clientOpts.authToken = config.apiKey;
@@ -475,27 +482,22 @@ async function enhancePromptWithClaudeAsk(originalPrompt, systemPrompt, model, c
   }
   const client = new Anthropic(clientOpts);
 
-  console.log('[PromptEnhancer] Streaming via Anthropic SDK messages.stream()...');
+  console.log('[PromptEnhancer] Streaming via Anthropic SDK messages.create({stream: true})...');
 
   let streamedText = '';
-  const stream = client.messages.stream(
-    buildEnhanceAskRequest(modelId, fullPrompt, systemPrompt, maxTokens)
-  );
-  stream.on('text', (text) => {
-    if (text) {
-      emitContentDelta(text);
-      streamedText += text;
-    }
+  // Not messages.stream(): its message accumulator assumes the official SSE shape and
+  // throws "Cannot read properties of undefined (reading 'push')" when an upstream omits
+  // `content` from message_start (observed on OpenCode Go behind a local proxy). Iterating
+  // the raw events only needs the deltas we care about, and ignores thinking blocks.
+  const stream = await client.messages.create({
+    ...buildEnhanceAskRequest(modelId, fullPrompt, systemPrompt, maxTokens),
+    stream: true,
   });
 
-  const finalMessage = await stream.finalMessage();
-
-  if (!streamedText.trim() && finalMessage && Array.isArray(finalMessage.content)) {
-    for (const block of finalMessage.content) {
-      if (block && block.type === 'text' && block.text) {
-        emitContentDelta(block.text);
-        streamedText += block.text;
-      }
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta' && event.delta && event.delta.type === 'text_delta' && event.delta.text) {
+      emitContentDelta(event.delta.text);
+      streamedText += event.delta.text;
     }
   }
 

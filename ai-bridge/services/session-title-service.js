@@ -152,13 +152,22 @@ function resolveHaikuModel() {
 /**
  * Create an Anthropic client based on the auth configuration.
  * @param {object} config - API config from setupApiKey()
+ * @param {string} [sessionId] - Session id, forwarded as the upstream session header
  * @returns {Promise<object>} Anthropic client instance
  */
-async function createAnthropicClient(config) {
+async function createAnthropicClient(config, sessionId) {
   const cliHeaders = {
     'x-app': 'cli',
     'User-Agent': getCliUserAgent()
   };
+
+  // Some relays (e.g. OpenCode Go reached through a local proxy) route requests by
+  // session and answer 400 MissingSessionID without a session header, so direct SDK
+  // calls must carry the id we already have. The value is opaque to them; the
+  // official API and relays that do not route by session ignore the header.
+  if (sessionId) {
+    cliHeaders['x-opencode-session'] = sessionId;
+  }
 
   if (config.authType === 'aws_bedrock') {
     const bedrockModule = await ensureBedrockSdk();
@@ -188,14 +197,15 @@ async function createAnthropicClient(config) {
 /**
  * Build the messages.create() request for title generation.
  * thinking is disabled: the Haiku alias can be user-mapped to a reasoning
- * model (e.g. DeepSeek via relay), which would otherwise burn the 128-token
- * budget on `thinking` blocks and return an empty title.
+ * model (e.g. DeepSeek via relay), which would otherwise spend the budget on
+ * `thinking` blocks and return an empty title. The budget keeps headroom for
+ * relays that ignore the flag (observed: thinking block, stop_reason max_tokens).
  * Exposed for tests.
  */
 export function buildSessionTitleRequest(model, userMessage) {
   return {
     model,
-    max_tokens: 128,
+    max_tokens: 2048,
     thinking: { type: 'disabled' },
     messages: [{ role: 'user', content: userMessage }],
     system: SESSION_TITLE_PROMPT,
@@ -205,9 +215,10 @@ export function buildSessionTitleRequest(model, userMessage) {
 /**
  * Call Haiku API to generate a title.
  * @param {string} userMessage - The user's first message text
+ * @param {string} sessionId - Session id, forwarded as the upstream session header
  * @returns {Promise<string|null>} Generated title or null
  */
-async function callHaikuApi(userMessage) {
+async function callHaikuApi(userMessage, sessionId) {
   const config = setupApiKey();
 
   // CLI login uses SDK-native OAuth which the direct Anthropic SDK doesn't support.
@@ -221,7 +232,7 @@ async function callHaikuApi(userMessage) {
     return null;
   }
 
-  const client = await createAnthropicClient(config);
+  const client = await createAnthropicClient(config, sessionId);
   const model = resolveHaikuModel();
   logTitleEvent('info', 'Calling Haiku API, model: ' + model);
 
@@ -362,7 +373,7 @@ export async function generateSessionTitle(userMessage, sessionId, cwd) {
       }
     }
 
-    const title = await callHaikuApi(input);
+    const title = await callHaikuApi(input, sessionId);
     if (title) {
       // saveAiTitle returning false signals an FS error; don't retry — disk
       // problems are usually persistent and a retry storm helps no one.
