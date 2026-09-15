@@ -262,6 +262,7 @@ public class ClaudeChatWindow {
         this.webviewEventQueue = new WebviewEventQueue<JBCefBrowser>(
                 () -> this.browser,
                 () -> this.disposed,
+                () -> this.activePageGeneration,
                 this::executeQueuedWebviewScript
         );
         this.streamCoalescer = new StreamMessageCoalescer(new StreamMessageCoalescer.JsCallbackTarget() {
@@ -2143,8 +2144,18 @@ public class ClaudeChatWindow {
         webviewEventQueue.enqueueRaw(jsCode);
     }
 
-    private void executeQueuedWebviewScript(JBCefBrowser targetBrowser, String jsCode) {
-        if (this.disposed || this.browser != targetBrowser) {
+    private void executeQueuedWebviewScript(
+            JBCefBrowser targetBrowser,
+            int expectedPageGeneration,
+            String jsCode
+    ) {
+        if (this.disposed
+                || this.browser != targetBrowser
+                || this.activePageGeneration != expectedPageGeneration) {
+            LOG.warn("Dropping queued webview script: browser/page changed or window disposed"
+                    + " (expectedPageGeneration=" + expectedPageGeneration
+                    + ", actualPageGeneration=" + this.activePageGeneration
+                    + ", scriptLength=" + (jsCode == null ? 0 : jsCode.length()) + ")");
             return;
         }
         try {
@@ -2989,6 +3000,7 @@ public class ClaudeChatWindow {
                     surfaceRefreshCoordinator.invalidate();
                     cancelScheduledOsrSurfaceRefresh();
                     activePageGeneration = pageGeneration;
+                    webviewEventQueue.pageChanged();
                 }
                 dispatchGate.activatePageGeneration(pageGeneration);
             }

@@ -9,6 +9,7 @@ import FallbackDialog from './AskUserQuestionDialog/FallbackDialog';
 import TimeoutWarningBanner from './AskUserQuestionDialog/TimeoutWarningBanner';
 import { normalizeQuestions } from './AskUserQuestionDialog/answerState';
 import { useAskUserQuestionState } from './AskUserQuestionDialog/useAskUserQuestionState';
+import { clearDialogDraft } from '../utils/dialogStateStorage';
 import './AskUserQuestionDialog.css';
 
 export interface QuestionOption {
@@ -28,6 +29,8 @@ export interface AskUserQuestionRequest {
   toolName: string;
   questions: Question[];
   provider?: 'claude' | 'codex';
+  deadlineMs?: number;
+  dialogToken?: string;
 }
 
 interface AskUserQuestionDialogProps {
@@ -50,14 +53,16 @@ const AskUserQuestionDialog = ({
 
   const handleTimeout = useCallback(() => {
     if (request) {
+      clearDialogDraft('askUserQuestion', request.requestId, request.dialogToken);
       onCancel(request.requestId);
     }
   }, [request, onCancel]);
 
   const { remainingSeconds, isTimeWarning, markSubmitted } = useDialogCountdownTimeout({
     isOpen,
-    requestKey: request?.requestId,
+    requestKey: request?.dialogToken ?? request?.requestId,
     timeoutSeconds,
+    deadlineMs: request?.deadlineMs,
     onTimeout: handleTimeout,
   });
 
@@ -69,6 +74,7 @@ const AskUserQuestionDialog = ({
 
   const handleCancel = useCallback(() => {
     if (request && markSubmitted()) {
+      clearDialogDraft('askUserQuestion', request.requestId, request.dialogToken);
       onCancel(request.requestId);
     }
   }, [request, markSubmitted, onCancel]);

@@ -6,6 +6,7 @@ import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from '../utils/permissionDi
 import MarkdownBlock from './MarkdownBlock';
 import { useDialogResize } from '../hooks/useDialogResize';
 import { isEditableEventTarget } from '../utils/isEditableEventTarget';
+import { clearDialogDraft, readDialogDraft, writeDialogDraft } from '../utils/dialogStateStorage';
 import './PlanApprovalDialog.css';
 
 export interface AllowedPrompt {
@@ -19,6 +20,8 @@ export interface PlanApprovalRequest {
   plan?: string;
   allowedPrompts?: AllowedPrompt[];
   timestamp?: string;
+  deadlineMs?: number;
+  dialogToken?: string;
 }
 
 interface PlanApprovalDialogProps {
@@ -27,6 +30,13 @@ interface PlanApprovalDialogProps {
   onApprove: (requestId: string, targetMode: string) => void;
   onReject: (requestId: string) => void;
   timeoutSeconds?: number;
+}
+
+interface PlanApprovalDraft {
+  deadlineMs?: number;
+  dialogToken?: string;
+  selectedMode?: string;
+  isCollapsed?: boolean;
 }
 
 // Execution modes available after plan approval
@@ -47,38 +57,63 @@ const PlanApprovalDialog = ({
   const { t } = useTranslation();
   const [selectedMode, setSelectedMode] = useState('default');
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [hydratedRequestKey, setHydratedRequestKey] = useState<string | null>(null);
   const { dialogRef, dialogHeight, setDialogHeight, handleResizeStart } = useDialogResize({ minHeight: 200 });
 
   const handleTimeout = useCallback(() => {
     if (request) {
+      clearDialogDraft('planApproval', request.requestId, request.dialogToken);
       onReject(request.requestId);
     }
   }, [request, onReject]);
 
   const { remainingSeconds, isTimeWarning, markSubmitted } = useDialogCountdownTimeout({
     isOpen,
-    requestKey: request?.requestId,
+    requestKey: request?.dialogToken ?? request?.requestId,
     timeoutSeconds,
+    deadlineMs: request?.deadlineMs,
     onTimeout: handleTimeout,
   });
 
   const handleApprove = useCallback(() => {
     if (!request || !markSubmitted()) return;
+    clearDialogDraft('planApproval', request.requestId, request.dialogToken);
     onApprove(request.requestId, selectedMode);
   }, [request, selectedMode, markSubmitted, onApprove]);
 
   const handleReject = useCallback(() => {
     if (!request || !markSubmitted()) return;
+    clearDialogDraft('planApproval', request.requestId, request.dialogToken);
     onReject(request.requestId);
   }, [request, markSubmitted, onReject]);
 
   useEffect(() => {
-    if (isOpen && request) {
-      setSelectedMode('default');
-      setIsCollapsed(false);
-      setDialogHeight(null);
+    if (!isOpen || !request) {
+      setHydratedRequestKey(null);
+      return;
     }
-  }, [isOpen, request?.requestId, setDialogHeight]);
+    const draft = readDialogDraft<PlanApprovalDraft>('planApproval', request.requestId, request.deadlineMs, request.dialogToken);
+    const restoredMode = draft?.selectedMode;
+    const selectedModeIsValid = EXECUTION_MODES.some((mode) => mode.id === restoredMode);
+    setSelectedMode(selectedModeIsValid ? restoredMode! : 'default');
+    setIsCollapsed(draft?.isCollapsed === true);
+    setDialogHeight(null);
+    setHydratedRequestKey(request.dialogToken ?? request.requestId);
+  }, [isOpen, request?.requestId, request?.dialogToken, request?.deadlineMs, setDialogHeight]);
+
+  useEffect(() => {
+    const requestId = request?.requestId;
+    const deadlineMs = request?.deadlineMs;
+    if (!isOpen || requestId === undefined || hydratedRequestKey !== (request?.dialogToken ?? requestId)) {
+      return;
+    }
+    writeDialogDraft('planApproval', requestId, {
+      deadlineMs,
+      dialogToken: request?.dialogToken,
+      selectedMode,
+      isCollapsed,
+    });
+  }, [hydratedRequestKey, isCollapsed, isOpen, request?.requestId, request?.dialogToken, request?.deadlineMs, selectedMode]);
 
   // Keyboard event handling
   useEffect(() => {

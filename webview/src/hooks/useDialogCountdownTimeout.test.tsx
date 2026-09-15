@@ -144,6 +144,88 @@ describe('useDialogCountdownTimeout', () => {
     expect(onTimeout).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the backend deadline after the dialog remounts', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const onTimeout = vi.fn();
+
+    const { rerender, result } = renderHook(
+      ({ isOpen }: { isOpen: boolean }) => useDialogCountdownTimeout({
+        isOpen,
+        requestKey: 'request-1',
+        timeoutSeconds: 30,
+        deadlineMs: 3_000,
+        onTimeout,
+      }),
+      { initialProps: { isOpen: true } },
+    );
+
+    act(() => {
+      vi.setSystemTime(1_000);
+    });
+    rerender({ isOpen: false });
+    rerender({ isOpen: true });
+
+    expect(result.current.remainingSeconds).toBe(2);
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts the countdown when the open request is replaced by a later deadline', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const onTimeout = vi.fn();
+
+    const { rerender, result } = renderHook(
+      ({ deadlineMs }: { deadlineMs: number }) => useDialogCountdownTimeout({
+        isOpen: true,
+        requestKey: 'channel-1',
+        timeoutSeconds: 30,
+        deadlineMs,
+        onTimeout,
+      }),
+      { initialProps: { deadlineMs: 5_000 } },
+    );
+    expect(result.current.remainingSeconds).toBe(5);
+
+    // The session reuses one channelId, and a force-close plus the next show for
+    // that id are injected in the same JS batch: isOpen and requestKey stay put
+    // while the payload — and its deadline — is replaced.
+    act(() => {
+      vi.setSystemTime(1_000);
+    });
+    rerender({ deadlineMs: 9_000 });
+
+    expect(result.current.remainingSeconds).toBe(8);
+    act(() => {
+      vi.advanceTimersByTime(8_000);
+    });
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts an expired timer when the same id receives a new deadline', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const onTimeout = vi.fn();
+    const { rerender } = renderHook(
+      ({ deadlineMs }) => useDialogCountdownTimeout({
+        isOpen: true,
+        requestKey: 'channel-1',
+        timeoutSeconds: 30,
+        deadlineMs,
+        onTimeout,
+      }),
+      { initialProps: { deadlineMs: 1_000 } },
+    );
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+    rerender({ deadlineMs: 3_000 });
+    act(() => { vi.advanceTimersByTime(2_000); });
+    expect(onTimeout).toHaveBeenCalledTimes(2);
+  });
+
   it('uses the new timeoutSeconds when a fresh dialog opens (requestKey changes)', () => {
     vi.useFakeTimers();
     const onTimeout = vi.fn();

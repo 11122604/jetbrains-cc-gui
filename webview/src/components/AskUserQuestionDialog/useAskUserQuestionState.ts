@@ -3,6 +3,16 @@ import type { AskUserQuestionRequest, Question } from '../AskUserQuestionDialog'
 import { isEditableEventTarget } from '../../utils/isEditableEventTarget';
 import { OTHER_OPTION_MARKER, MAX_CUSTOM_INPUT_LENGTH } from './constants';
 import { buildInitialAnswerState, formatAnswers, toggleAnswerSelection } from './answerState';
+import { clearDialogDraft, readDialogDraft, writeDialogDraft } from '../../utils/dialogStateStorage';
+
+interface AskUserQuestionDraft {
+  deadlineMs?: number;
+  dialogToken?: string;
+  answers?: Record<string, string[]>;
+  customInputs?: Record<string, string>;
+  currentQuestionIndex?: number;
+  isCollapsed?: boolean;
+}
 
 interface UseAskUserQuestionStateParams {
   isOpen: boolean;
@@ -27,16 +37,70 @@ export const useAskUserQuestionState = ({
   const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [hydratedRequestKey, setHydratedRequestKey] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isOpen && request) {
-      const { initialAnswers, initialCustomInputs } = buildInitialAnswerState(request);
-      setAnswers(initialAnswers);
-      setCustomInputs(initialCustomInputs);
-      setCurrentQuestionIndex(0);
-      setIsCollapsed(false);
+    if (!isOpen || !request) {
+      setHydratedRequestKey(null);
+      return;
     }
-  }, [isOpen, request?.requestId]);
+
+    const { initialAnswers, initialCustomInputs } = buildInitialAnswerState(request);
+    const draft = readDialogDraft<AskUserQuestionDraft>('askUserQuestion', request.requestId, request.deadlineMs, request.dialogToken);
+    if (draft?.answers) {
+      for (const [question, labels] of Object.entries(draft.answers)) {
+        if (Array.isArray(labels)) {
+          initialAnswers[question] = new Set(labels.filter((label): label is string => typeof label === 'string'));
+        }
+      }
+    }
+    if (draft?.customInputs && typeof draft.customInputs === 'object') {
+      for (const [question, value] of Object.entries(draft.customInputs)) {
+        if (typeof value === 'string') {
+          initialCustomInputs[question] = value.slice(0, MAX_CUSTOM_INPUT_LENGTH);
+        }
+      }
+    }
+    setAnswers(initialAnswers);
+    setCustomInputs(initialCustomInputs);
+    setCurrentQuestionIndex(
+      typeof draft?.currentQuestionIndex === 'number' && Number.isInteger(draft.currentQuestionIndex)
+        ? Math.max(0, draft.currentQuestionIndex)
+        : 0,
+    );
+    setIsCollapsed(draft?.isCollapsed === true);
+    setHydratedRequestKey(request.dialogToken ?? request.requestId);
+  }, [isOpen, request?.requestId, request?.dialogToken, request?.deadlineMs]);
+
+  useEffect(() => {
+    const requestId = request?.requestId;
+    const deadlineMs = request?.deadlineMs;
+    if (!isOpen || requestId === undefined || hydratedRequestKey !== (request?.dialogToken ?? requestId)) {
+      return;
+    }
+    const serializedAnswers: Record<string, string[]> = {};
+    for (const [question, labels] of Object.entries(answers)) {
+      serializedAnswers[question] = Array.from(labels);
+    }
+    writeDialogDraft('askUserQuestion', requestId, {
+      deadlineMs,
+      dialogToken: request?.dialogToken,
+      answers: serializedAnswers,
+      customInputs,
+      currentQuestionIndex,
+      isCollapsed,
+    });
+  }, [
+    answers,
+    customInputs,
+    currentQuestionIndex,
+    hydratedRequestKey,
+    isCollapsed,
+    isOpen,
+    request?.requestId,
+    request?.dialogToken,
+    request?.deadlineMs,
+  ]);
 
   // Keyboard event handling - separate effect to avoid frequent listener registration/removal
   useEffect(() => {
@@ -69,6 +133,7 @@ export const useAskUserQuestionState = ({
     if (!markSubmitted() || !request) return;
 
     onSubmit(request.requestId, formatAnswers(normalizedQuestions, answers, customInputs));
+    clearDialogDraft('askUserQuestion', request.requestId, request.dialogToken);
   };
 
   const handleOptionToggle = (label: string) => {

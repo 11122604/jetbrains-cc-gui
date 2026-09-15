@@ -249,29 +249,14 @@ interface Window {
    */
   showPlanApprovalDialog?: (json: string) => void;
 
-  /**
-   * Force-close the open AskUserQuestion dialog matching the given requestId.
-   * Sent by the Java backend when its safety-net timer fires and resolves the
-   * pending future with an empty answer — the WebView dialog (if still visible)
-   * must be torn down too, otherwise its open-refs stay set and every
-   * subsequent showAskUserQuestionDialog call is silently enqueued behind the
-   * orphaned dialog (issue #1360). When requestId is null/empty, every open
-   * dialog is closed.
-   */
-  forceCloseAskUserQuestionDialog?: (requestId?: string | null) => void;
+  /** Closes question dialogs matching the ID and token; an empty ID closes all. */
+  forceCloseAskUserQuestionDialog?: (requestId?: string | null, dialogToken?: string) => void;
 
-  /**
-   * Force-close the open permission dialog matching the given channelId, or
-   * every open dialog when channelId is null/empty. Same rationale as
-   * forceCloseAskUserQuestionDialog.
-   */
-  forceClosePermissionDialog?: (channelId?: string | null) => void;
+  /** Closes permission dialogs matching the ID and token; an empty ID closes all. */
+  forceClosePermissionDialog?: (channelId?: string | null, dialogToken?: string) => void;
 
-  /**
-   * Force-close the open plan approval dialog matching the given requestId, or
-   * every open dialog when requestId is null/empty.
-   */
-  forceClosePlanApprovalDialog?: (requestId?: string | null) => void;
+  /** Closes plan dialogs matching the ID and token; an empty ID closes all. */
+  forceClosePlanApprovalDialog?: (requestId?: string | null, dialogToken?: string) => void;
 
   /**
    * Add selection info (file and line numbers) - auto-tracked, only updates ContextBar
@@ -1032,11 +1017,11 @@ interface Window {
    */
   __pendingPermissionDialogTimeout?: string;
 
-  __pendingPermissionDialogRequests?: string[];
-
-  __pendingAskUserQuestionDialogRequests?: string[];
-
-  __pendingPlanApprovalDialogRequests?: string[];
+  /** Preserves arrival order for dialog events received before React mounts. */
+  __pendingDialogEvents?: Array<
+    { kind: 'permission' | 'askUserQuestion' | 'planApproval'; type: 'show'; payload: string }
+    | { kind: 'permission' | 'askUserQuestion' | 'planApproval'; type: 'close'; targetId: string | null; dialogToken?: string }
+  >;
 
   /**
    * Pending updateMessages payload before React initialization
