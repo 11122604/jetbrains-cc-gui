@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 
 import {
   DshGoalSettlement,
+  bridgeModernApproval,
+  bridgeModernQuestion,
   peekMuxSessionId,
+  projectFollowFrame,
   projectMuxFrame,
+  projectRemoteEventFrame,
   unwrapMuxEnvelope,
 } from './events.js';
 
@@ -144,4 +148,76 @@ test('DshGoalSettlement settles plain turns and failures', () => {
   cleared.feed('goal-change', { goal: { phase: 'active' } });
   cleared.feed('turn-completed'); // suppressed, awaiting idle
   assert.equal(cleared.feed('goal-change', { operation: 'clear', goal: null }), 'settle');
+});
+
+test('projectFollowFrame maps durable events and assistant deltas', () => {
+  assert.deepEqual(
+    projectFollowFrame({ type: 'event', event: { type: 'turn/start', data: {} } }),
+    [{ kind: 'turn-start' }]
+  );
+  assert.deepEqual(
+    projectFollowFrame({
+      type: 'assistant-stream',
+      frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'hi' } },
+    }),
+    [{ kind: 'text-delta', text: 'hi' }]
+  );
+  // Lifecycle bookends and the opening snapshot carry nothing to project.
+  assert.deepEqual(projectFollowFrame({ type: 'assistant-stream', frame: { type: 'start' } }), []);
+  assert.deepEqual(projectFollowFrame({ type: 'snapshot', records: [{ type: 'event' }] }), []);
+  assert.deepEqual(projectFollowFrame(null), []);
+});
+
+test('projectRemoteEventFrame distinguishes ready, waterfalls and cancel', () => {
+  assert.deepEqual(
+    projectRemoteEventFrame({ type: 'ready', clientId: 'c1', host: { home: '/h' } }),
+    { kind: 'ready', clientId: 'c1' }
+  );
+  assert.deepEqual(
+    projectRemoteEventFrame({
+      type: 'waterfall',
+      event: 'approval/request',
+      eventId: 'e1',
+      request: { toolName: 'pwsh', reason: 'escalate' },
+    }),
+    { kind: 'approval-request', eventId: 'e1', request: { toolName: 'pwsh', reason: 'escalate' } }
+  );
+  assert.deepEqual(
+    projectRemoteEventFrame({
+      type: 'waterfall',
+      event: 'user-questions/request',
+      eventId: 'e2',
+      request: { questions: [{ id: 'q1', question: 'Pick' }] },
+    }),
+    { kind: 'question-request', eventId: 'e2', request: { questions: [{ id: 'q1', question: 'Pick' }] } }
+  );
+  assert.deepEqual(projectRemoteEventFrame({ type: 'cancel', eventId: 'e3' }), {
+    kind: 'cancel',
+    eventId: 'e3',
+  });
+  // Forwarded emits and unknown/withdrawn shapes are not bridge instructions.
+  assert.equal(projectRemoteEventFrame({ type: 'emit', event: 'api-session/added', args: [] }), null);
+  assert.equal(projectRemoteEventFrame({ type: 'waterfall', event: 'other/event', eventId: 'e' }), null);
+  assert.equal(projectRemoteEventFrame({ type: 'ready' }), null);
+  assert.equal(projectRemoteEventFrame(undefined), null);
+});
+test('modern bridges skip a waterfall the host already withdrew', async () => {
+  const posted = [];
+  const client = {
+    async answerRemoteEvent(...args) {
+      posted.push(args);
+    },
+  };
+  const withdrawn = () => true;
+  assert.equal(
+    await bridgeModernApproval(client, 'c1', { eventId: 'e1', request: {} }, () => {}, withdrawn),
+    false
+  );
+  assert.equal(
+    await bridgeModernQuestion(client, 'c1', { eventId: 'e2', request: {} }, () => {}, withdrawn),
+    false
+  );
+  // A withdrawn waterfall must never reach $events/result — and must not
+  // prompt the user at all (the pre-check runs before the Java IPC).
+  assert.equal(posted.length, 0);
 });

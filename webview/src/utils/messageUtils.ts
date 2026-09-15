@@ -9,6 +9,7 @@ import {
   formatTaskNotificationForDisplay,
   hasCommandMessageTag,
   hasTaskNotificationTag,
+  hasVisibleMessageText,
   isSyntheticToolMessageContent,
   HIDDEN_OUTPUT_TAGS,
   INTERNAL_METADATA_TAGS,
@@ -398,15 +399,17 @@ export function getMessageText(
     } else if (typeof raw.content === 'string') {
       text = raw.content;
     } else if (Array.isArray(raw.content)) {
-      text = raw.content
-        .filter((block) => block && block.type === 'text')
-        .map((block) => block.text ?? '')
-        .join('\n');
+      const parts: string[] = [];
+      for (const block of raw.content) {
+        if (block && block.type === 'text') parts.push(block.text ?? '');
+      }
+      text = parts.join('\n');
     } else if (raw.message?.content && Array.isArray(raw.message.content)) {
-      text = raw.message.content
-        .filter((block) => block && block.type === 'text')
-        .map((block) => block.text ?? '')
-        .join('\n');
+      const parts: string[] = [];
+      for (const block of raw.message.content) {
+        if (block && block.type === 'text') parts.push(block.text ?? '');
+      }
+      text = parts.join('\n');
     } else {
       return `(${t('chat.emptyMessage')})`;
     }
@@ -478,18 +481,20 @@ export function shouldShowMessage(
     if (typeof raw === 'string') return raw;
     if (typeof raw.content === 'string') return raw.content;
     if (Array.isArray(raw.content)) {
-      return raw.content
-        .filter((block) => block && block.type === 'text')
-        .map((block) => block.text ?? '')
-        .join('\n');
+      const parts: string[] = [];
+      for (const block of raw.content) {
+        if (block && block.type === 'text') parts.push(block.text ?? '');
+      }
+      return parts.join('\n');
     }
     if (raw.message?.content) {
       if (typeof raw.message.content === 'string') return raw.message.content;
       if (Array.isArray(raw.message.content)) {
-        return raw.message.content
-          .filter((block) => block && block.type === 'text')
-          .map((block) => block.text ?? '')
-          .join('\n');
+        const parts: string[] = [];
+        for (const block of raw.message.content) {
+          if (block && block.type === 'text') parts.push(block.text ?? '');
+        }
+        return parts.join('\n');
       }
     }
     return '';
@@ -636,12 +641,11 @@ export function getContentBlocks(
     }
     // Streaming/tool scenario: if raw doesn't have text but message.content has text, still need to show text
     const hasTextBlock = rawBlocks.some(
-      (block) => block.type === 'text' && typeof block.text === 'string' && String(block.text).trim().length > 0,
+      (block) => block.type === 'text' && hasVisibleMessageText(block.text),
     );
     if (
       !hasTextBlock &&
-      message.content &&
-      message.content.trim() &&
+      hasVisibleMessageText(message.content) &&
       !isSyntheticToolMessageContent(message.content, rawBlocks)
     ) {
       return [...rawBlocks, { type: 'text', text: localizeMessage(message.content) }];
@@ -649,7 +653,7 @@ export function getContentBlocks(
     return rawBlocks;
   }
   // If no raw blocks, check if content needs special handling
-  if (message.content && message.content.trim()) {
+  if (hasVisibleMessageText(message.content)) {
     // Handle task-notification in message.content directly
     if (hasTaskNotificationTag(message.content)) {
       const block = createTaskNotificationBlock(message.content);

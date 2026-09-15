@@ -122,6 +122,22 @@ async function generateWithClaude(prompt, model) {
 }
 
 /**
+ * Build the request for the commit ask path.
+ * Reasoning models (e.g. DeepSeek) otherwise emit only `thinking` blocks and
+ * never a `text` answer, leaving the commit message empty. The budget keeps
+ * headroom for relays that ignore thinking:{type:'disabled'}.
+ * Exposed for tests.
+ */
+export function buildCommitAskRequest(modelId, prompt) {
+  return {
+    model: modelId,
+    max_tokens: 2048,
+    thinking: { type: 'disabled' },
+    messages: [{ role: 'user', content: prompt }],
+  };
+}
+
+/**
  * Fast path: Anthropic SDK messages.stream() with a real API key / auth token.
  */
 async function generateWithClaudeAsk(prompt, model, config) {
@@ -137,7 +153,14 @@ async function generateWithClaudeAsk(prompt, model, config) {
 
   const clientOpts = {
     baseURL: config.baseUrl || undefined,
-    defaultHeaders: { 'x-app': 'cli', 'User-Agent': getCliUserAgent() },
+    // Some relays (e.g. OpenCode Go reached through a local proxy) route requests by
+    // session and answer 400 MissingSessionID without a session header. This call has no
+    // real session to forward, and the value only has to be non-empty to satisfy them.
+    defaultHeaders: {
+      'x-app': 'cli',
+      'User-Agent': getCliUserAgent(),
+      'x-opencode-session': 'ccgui-commit-message',
+    },
   };
   if (config.authType === 'auth_token') {
     clientOpts.authToken = config.apiKey;
@@ -148,33 +171,25 @@ async function generateWithClaudeAsk(prompt, model, config) {
   const client = new Anthropic(clientOpts);
 
   console.log('[MESSAGE_START]');
-  console.log('[CommitMessage] Streaming via Anthropic SDK messages.stream()...');
+  console.log('[CommitMessage] Streaming via Anthropic SDK messages.create({stream: true})...');
 
   let streamedText = '';
-  const stream = client.messages.stream({
-    model: modelId,
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
+  // Not messages.stream(): its message accumulator assumes the official SSE shape and
+  // throws "Cannot read properties of undefined (reading 'push')" when an upstream omits
+  // `content` from message_start (observed on OpenCode Go behind a local proxy). Iterating
+  // the raw events only needs the deltas we care about, and ignores thinking blocks.
+  const stream = await client.messages.create({
+    ...buildCommitAskRequest(modelId, prompt),
+    stream: true,
   });
 
-  stream.on('text', (text) => {
-    if (text) {
-      process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(text)}\n`);
-      streamedText += text;
-    }
-  });
-
-  const finalMessage = await stream.finalMessage();
-  console.log('[MESSAGE_END]');
-
-  // Fallback: assemble from the final message content blocks if streaming yielded nothing.
-  if (!streamedText.trim() && finalMessage && Array.isArray(finalMessage.content)) {
-    for (const block of finalMessage.content) {
-      if (block && block.type === 'text' && block.text) {
-        streamedText += block.text;
-      }
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta' && event.delta && event.delta.type === 'text_delta' && event.delta.text) {
+      process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(event.delta.text)}\n`);
+      streamedText += event.delta.text;
     }
   }
+  console.log('[MESSAGE_END]');
 
   console.log(`[CommitMessage] Claude response text length: ${streamedText.length}`);
   if (streamedText.trim()) {

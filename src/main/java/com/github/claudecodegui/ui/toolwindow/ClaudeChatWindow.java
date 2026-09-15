@@ -11,7 +11,9 @@ import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.common.MarkerCliBridge;
 import com.github.claudecodegui.provider.dsh.DshCliBridge;
 import com.github.claudecodegui.provider.grok.GrokSDKBridge;
+import com.github.claudecodegui.provider.zcode.ZcodeSDKBridge;
 import com.github.claudecodegui.provider.kimi.KimiCliBridge;
+import com.github.claudecodegui.provider.minimax.MiniMaxCliBridge;
 import com.github.claudecodegui.provider.opencode.OpenCodeCliBridge;
 import com.github.claudecodegui.provider.pi.PiCliBridge;
 import com.github.claudecodegui.provider.omp.OmpCliBridge;
@@ -76,11 +78,13 @@ public class ClaudeChatWindow {
     private final ClaudeSDKBridge claudeSDKBridge;
     private final CodexSDKBridge codexSDKBridge;
     private final GrokSDKBridge grokSDKBridge;
+    private final ZcodeSDKBridge zcodeSDKBridge;
     private final Map<String, MarkerCliBridge> cliBridges;
     private final KimiCliBridge kimiCliBridge;
     private final OpenCodeCliBridge openCodeCliBridge;
     private final PiCliBridge piCliBridge;
     private final OmpCliBridge ompCliBridge;
+    private final MiniMaxCliBridge miniMaxCliBridge;
     private final Project project;
     private final CodemossSettingsService settingsService;
     private final HtmlLoader htmlLoader;
@@ -227,14 +231,16 @@ public class ClaudeChatWindow {
         this.claudeSDKBridge = new ClaudeSDKBridge();
         this.codexSDKBridge = new CodexSDKBridge();
         this.grokSDKBridge = new GrokSDKBridge();
+        this.zcodeSDKBridge = new ZcodeSDKBridge();
         this.kimiCliBridge = new KimiCliBridge();
         this.openCodeCliBridge = new OpenCodeCliBridge();
         this.piCliBridge = new PiCliBridge();
         this.ompCliBridge = new OmpCliBridge();
+        this.miniMaxCliBridge = new MiniMaxCliBridge();
         // Grok uses GrokSDKBridge (persistent ACP / grok agent stdio), not MarkerCliBridge.
         this.cliBridges = SessionProviderRouter.registerCliBridges(
                 this.kimiCliBridge, this.openCodeCliBridge, this.piCliBridge,
-                this.ompCliBridge, new DshCliBridge());
+                this.ompCliBridge, new DshCliBridge(), this.miniMaxCliBridge);
         this.settingsService = new CodemossSettingsService();
         this.htmlLoader = new HtmlLoader(getClass());
         this.mainPanel = new JPanel(new BorderLayout());
@@ -256,6 +262,7 @@ public class ClaudeChatWindow {
         this.webviewEventQueue = new WebviewEventQueue<JBCefBrowser>(
                 () -> this.browser,
                 () -> this.disposed,
+                () -> this.activePageGeneration,
                 this::executeQueuedWebviewScript
         );
         this.streamCoalescer = new StreamMessageCoalescer(new StreamMessageCoalescer.JsCallbackTarget() {
@@ -285,7 +292,8 @@ public class ClaudeChatWindow {
                 () -> frontendReady
         );
 
-        this.session = new ClaudeSession(project, claudeSDKBridge, codexSDKBridge, cliBridges, grokSDKBridge);
+        this.session = new ClaudeSession(
+                project, claudeSDKBridge, codexSDKBridge, cliBridges, grokSDKBridge, zcodeSDKBridge);
 
         this.chatWindowDelegate = new ChatWindowDelegate(createDelegateHost());
         chatWindowDelegate.loadPermissionModeFromSettings();
@@ -314,6 +322,11 @@ public class ClaudeChatWindow {
             @Override
             public GrokSDKBridge getGrokSDKBridge() {
                 return grokSDKBridge;
+            }
+
+            @Override
+            public ZcodeSDKBridge getZcodeSDKBridge() {
+                return zcodeSDKBridge;
             }
 
             @Override
@@ -1381,6 +1394,9 @@ public class ClaudeChatWindow {
     public GrokSDKBridge getGrokSDKBridge() {
         return grokSDKBridge;
     }
+    public ZcodeSDKBridge getZcodeSDKBridge() {
+        return zcodeSDKBridge;
+    }
 
     public CodexSDKBridge getCodexSDKBridge() {
         return codexSDKBridge;
@@ -1404,6 +1420,10 @@ public class ClaudeChatWindow {
 
     public OmpCliBridge getOmpCliBridge() {
         return ompCliBridge;
+    }
+
+    public MiniMaxCliBridge getMiniMaxCliBridge() {
+        return miniMaxCliBridge;
     }
 
     /**
@@ -2124,8 +2144,18 @@ public class ClaudeChatWindow {
         webviewEventQueue.enqueueRaw(jsCode);
     }
 
-    private void executeQueuedWebviewScript(JBCefBrowser targetBrowser, String jsCode) {
-        if (this.disposed || this.browser != targetBrowser) {
+    private void executeQueuedWebviewScript(
+            JBCefBrowser targetBrowser,
+            int expectedPageGeneration,
+            String jsCode
+    ) {
+        if (this.disposed
+                || this.browser != targetBrowser
+                || this.activePageGeneration != expectedPageGeneration) {
+            LOG.warn("Dropping queued webview script: browser/page changed or window disposed"
+                    + " (expectedPageGeneration=" + expectedPageGeneration
+                    + ", actualPageGeneration=" + this.activePageGeneration
+                    + ", scriptLength=" + (jsCode == null ? 0 : jsCode.length()) + ")");
             return;
         }
         try {
@@ -2423,7 +2453,7 @@ public class ClaudeChatWindow {
     }
 
     static boolean shouldReconcileTranscriptAtStreamEnd(String provider, String sessionId) {
-        return "grok".equals(provider) && sessionId != null && !sessionId.isBlank();
+        return ("grok".equals(provider) || "zcode".equals(provider)) && sessionId != null && !sessionId.isBlank();
     }
 
     /** (Re)arm the safety backstop; overlapping arms collapse to one pending tick. */
@@ -2878,6 +2908,17 @@ public class ClaudeChatWindow {
         } catch (Exception e) {
             LOG.warn("Failed to clean up Grok processes: " + e.getMessage());
         }
+        try {
+            if (zcodeSDKBridge != null) {
+                int activeCount = zcodeSDKBridge.getActiveProcessCount();
+                if (activeCount > 0) {
+                    LOG.info("Cleaning up " + activeCount + " active ZCode process(es)...");
+                }
+                zcodeSDKBridge.cleanupAllProcesses();
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to clean up ZCode processes: " + e.getMessage());
+        }
 
         try {
             if (targetBrowser != null) {
@@ -2959,6 +3000,7 @@ public class ClaudeChatWindow {
                     surfaceRefreshCoordinator.invalidate();
                     cancelScheduledOsrSurfaceRefresh();
                     activePageGeneration = pageGeneration;
+                    webviewEventQueue.pageChanged();
                 }
                 dispatchGate.activatePageGeneration(pageGeneration);
             }
@@ -3082,6 +3124,11 @@ public class ClaudeChatWindow {
             @Override
             public GrokSDKBridge getGrokSDKBridge() {
                 return grokSDKBridge;
+            }
+
+            @Override
+            public ZcodeSDKBridge getZcodeSDKBridge() {
+                return zcodeSDKBridge;
             }
 
             @Override
