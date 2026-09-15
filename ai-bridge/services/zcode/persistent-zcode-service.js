@@ -518,6 +518,14 @@ export async function shutdownPersistentRuntimes() {
   }
 }
 
+/** Lightweight lifecycle snapshot used by the outer daemon idle reaper. */
+export function getRuntimeSnapshot() {
+  return {
+    clientActive: !!(client && client.alive),
+    turnActive: !!activeTurn,
+  };
+}
+
 // =============================================================================
 // Usage
 // =============================================================================

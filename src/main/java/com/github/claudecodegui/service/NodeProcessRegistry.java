@@ -434,6 +434,13 @@ public final class NodeProcessRegistry implements Disposable {
             return null;
         }
         String lower = cmd.toLowerCase();
+        // JetBrains AI Assistant's ACP Codex is a separate long-lived process.
+        // Keep it distinct from CC GUI's one-shot channel-manager Codex so the
+        // orphan controls can never mistake external work for our own process.
+        if (lower.contains("@agentclientprotocol/codex-acp")
+                || (lower.contains("coding-copilot-jetbrains") && lower.contains("codex-acp"))) {
+            return "jetbrains-codex";
+        }
         boolean hasGrok = GROK_WORD.matcher(lower).find();
         boolean hasGemini = GEMINI_WORD.matcher(lower).find();
         boolean hasZcode = ZCODE_WORD.matcher(lower).find();
