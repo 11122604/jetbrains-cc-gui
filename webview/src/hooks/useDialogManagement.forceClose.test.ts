@@ -86,3 +86,84 @@ describe('useDialogManagement - forceClose queue draining (issue #1360)', () => 
     expect(result.current.currentPlanApprovalRequest).toBeNull();
   });
 });
+
+const request = (id: string, dialogToken: string, deadlineMs = 5_000) => ({
+  channelId: id, requestId: id, dialogToken, deadlineMs,
+  toolName: 'test', inputs: {}, questions: [],
+});
+
+type Dialogs = ReturnType<typeof useDialogManagement>;
+const cases = [
+  {
+    kind: 'permission',
+    open: (d: Dialogs) => d.openPermissionDialog,
+    close: (d: Dialogs) => d.forceClosePermissionDialog,
+    current: (d: Dialogs) => d.currentPermissionRequest,
+    submit: (d: Dialogs) => d.handlePermissionApprove('C'),
+  },
+  {
+    kind: 'askUserQuestion',
+    open: (d: Dialogs) => d.openAskUserQuestionDialog,
+    close: (d: Dialogs) => d.forceCloseAskUserQuestionDialog,
+    current: (d: Dialogs) => d.currentAskUserQuestionRequest,
+    submit: (d: Dialogs) => d.handleAskUserQuestionSubmit('C', {}),
+  },
+  {
+    kind: 'planApproval',
+    open: (d: Dialogs) => d.openPlanApprovalDialog,
+    close: (d: Dialogs) => d.forceClosePlanApprovalDialog,
+    current: (d: Dialogs) => d.currentPlanApprovalRequest,
+    submit: (d: Dialogs) => d.handlePlanApprovalApprove('C', 'default'),
+  },
+];
+
+describe.each(cases)('$kind request token isolation', (dialog) => {
+  it('blocks a closed request replay, not a fresh request with an earlier deadline', () => {
+    const { result } = renderHook(() => useDialogManagement({ t }));
+    act(() => { dialog.open(result.current)(request('C', 'old', 9_000)); });
+    act(() => { dialog.close(result.current)('C', 'old'); });
+    act(() => { dialog.open(result.current)(request('C', 'old', 9_000)); });
+    expect(dialog.current(result.current)).toBeNull();
+    act(() => { dialog.open(result.current)(request('C', 'new', 5_000)); });
+    expect(dialog.current(result.current)?.dialogToken).toBe('new');
+  });
+
+  it('ignores an old close even if its deadline was later than the live request', () => {
+    const { result } = renderHook(() => useDialogManagement({ t }));
+    act(() => { dialog.open(result.current)(request('C', 'new', 5_000)); });
+    act(() => { dialog.close(result.current)('C', 'old'); });
+    expect(dialog.current(result.current)?.dialogToken).toBe('new');
+  });
+
+  it('retains distinct requests with the same id in the pending queue', () => {
+    const { result } = renderHook(() => useDialogManagement({ t }));
+    act(() => {
+      dialog.open(result.current)(request('C', 'old'));
+      dialog.open(result.current)(request('C', 'new'));
+      dialog.open(result.current)(request('C', 'new'));
+    });
+    act(() => { dialog.close(result.current)('C', 'old'); });
+    expect(dialog.current(result.current)?.dialogToken).toBe('new');
+    act(() => { dialog.close(result.current)('C', 'new'); });
+    expect(dialog.current(result.current)).toBeNull();
+  });
+
+  it('does not reopen a submitted request when a delayed show arrives', () => {
+    const { result } = renderHook(() => useDialogManagement({ t }));
+    act(() => { dialog.open(result.current)(request('C', 'old')); });
+    act(() => { dialog.submit(result.current); });
+    act(() => { dialog.open(result.current)(request('C', 'old')); });
+    expect(dialog.current(result.current)).toBeNull();
+  });
+
+  it('closes every generation when explicitly asked to close all', () => {
+    const { result } = renderHook(() => useDialogManagement({ t }));
+    act(() => {
+      dialog.open(result.current)(request('C', 'old'));
+      dialog.open(result.current)(request('C', 'new'));
+      dialog.close(result.current)(null);
+    });
+    act(() => { dialog.open(result.current)(request('C', 'new')); });
+    expect(dialog.current(result.current)).toBeNull();
+  });
+});

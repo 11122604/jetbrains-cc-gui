@@ -8,9 +8,10 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
-import java.util.function.BiConsumer;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -21,14 +22,23 @@ final class WebviewEventQueue<T> {
     private static final Logger LOG = Logger.getInstance(WebviewEventQueue.class);
     private static final int MAX_PENDING_EVENTS = 256;
     private static final int MAX_BATCH_ARGUMENT_CHARS = 256_000;
+    private static final long UNAVAILABLE_WARN_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
+
+    @FunctionalInterface
+    interface ScriptExecutor<T> {
+        void accept(T browser, int pageGeneration, String script);
+    }
 
     private final Supplier<T> browserSupplier;
     private final BooleanSupplier disposedSupplier;
+    private final IntSupplier pageGenerationSupplier;
     private final Consumer<Runnable> scheduler;
-    private final BiConsumer<T, String> scriptExecutor;
+    private final ScriptExecutor<T> scriptExecutor;
     private final Object lock = new Object();
     private final Deque<JsCall<T>> pending = new ArrayDeque<>();
     private T queuedBrowser;
+    private int queuedPageGeneration;
+    private volatile long lastUnavailableWarnNanos;
     private boolean drainScheduled;
     private boolean draining;
     private boolean disposed;
@@ -36,11 +46,13 @@ final class WebviewEventQueue<T> {
     WebviewEventQueue(
             Supplier<T> browserSupplier,
             BooleanSupplier disposedSupplier,
-            BiConsumer<T, String> scriptExecutor
+            IntSupplier pageGenerationSupplier,
+            ScriptExecutor<T> scriptExecutor
     ) {
         this(
                 browserSupplier,
                 disposedSupplier,
+                pageGenerationSupplier,
                 runnable -> ApplicationManager.getApplication().invokeLater(runnable),
                 scriptExecutor
         );
@@ -49,21 +61,26 @@ final class WebviewEventQueue<T> {
     WebviewEventQueue(
             Supplier<T> browserSupplier,
             BooleanSupplier disposedSupplier,
+            IntSupplier pageGenerationSupplier,
             Consumer<Runnable> scheduler,
-            BiConsumer<T, String> scriptExecutor
+            ScriptExecutor<T> scriptExecutor
     ) {
         this.browserSupplier = browserSupplier;
         this.disposedSupplier = disposedSupplier;
+        this.pageGenerationSupplier = pageGenerationSupplier;
         this.scheduler = scheduler;
         this.scriptExecutor = scriptExecutor;
+        this.queuedBrowser = browserSupplier.get();
+        this.queuedPageGeneration = pageGenerationSupplier.getAsInt();
     }
 
     void enqueue(String functionName, String... args) {
         T browser = currentBrowser();
         if (browser == null) {
+            warnBrowserUnavailable(functionName);
             return;
         }
-        enqueue(new JsCall<T>(browser, functionName, copyArgs(args), null));
+        enqueue(new JsCall<T>(browser, pageGeneration(), functionName, copyArgs(args), null));
     }
 
     void enqueueRaw(String script) {
@@ -72,15 +89,25 @@ final class WebviewEventQueue<T> {
         }
         T browser = currentBrowser();
         if (browser == null) {
+            warnBrowserUnavailable("raw");
             return;
         }
-        enqueue(new JsCall<T>(browser, null, new String[0], script));
+        enqueue(new JsCall<T>(browser, pageGeneration(), null, new String[0], script));
     }
 
     void browserChanged() {
+        resetQueueTracking("browser was replaced");
+    }
+
+    void pageChanged() {
+        resetQueueTracking("page generation changed");
+    }
+
+    private void resetQueueTracking(String reason) {
         synchronized (lock) {
-            pending.clear();
+            logAndClearPending(reason);
             queuedBrowser = browserSupplier.get();
+            queuedPageGeneration = pageGeneration();
         }
     }
 
@@ -131,15 +158,38 @@ final class WebviewEventQueue<T> {
         return browserSupplier.get();
     }
 
+    /**
+     * Throttled warning for events dropped because no webview is available. The
+     * enqueue path can be hit at streaming frequency while the tool window has no
+     * browser yet, so the warning is rate-limited instead of silent. Teardown is
+     * excluded: dropping there is expected, not diagnostic.
+     */
+    private void warnBrowserUnavailable(String eventKind) {
+        if (disposed || disposedSupplier.getAsBoolean()) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (now - lastUnavailableWarnNanos < UNAVAILABLE_WARN_INTERVAL_NANOS) {
+            return;
+        }
+        lastUnavailableWarnNanos = now;
+        LOG.warn("Dropping webview event (" + eventKind + ") because no browser is available yet");
+    }
+
     private void enqueue(JsCall<T> call) {
         boolean scheduleDrain = false;
         synchronized (lock) {
             if (disposed || disposedSupplier.getAsBoolean()) {
                 return;
             }
-            if (queuedBrowser != call.browser) {
-                pending.clear();
+            // A sender delayed after capturing its page must not clear events already queued for the new page.
+            if (call.browser != browserSupplier.get() || call.pageGeneration != pageGeneration()) {
+                return;
+            }
+            if (queuedBrowser != call.browser || queuedPageGeneration != call.pageGeneration) {
+                logAndClearPending("browser or page generation changed");
                 queuedBrowser = call.browser;
+                queuedPageGeneration = call.pageGeneration;
             }
 
             if (isDelta(call) && mergeWithTailDelta(call)) {
@@ -178,26 +228,44 @@ final class WebviewEventQueue<T> {
         }
     }
 
+    private int pageGeneration() {
+        return pageGenerationSupplier.getAsInt();
+    }
+
+    private void logAndClearPending(String reason) {
+        if (!pending.isEmpty()) {
+            LOG.warn("Clearing " + pending.size()
+                    + " queued webview event(s) because " + reason);
+        }
+        pending.clear();
+    }
+
     private void drain() {
         List<JsCall<T>> batch;
         T targetBrowser;
+        int targetPageGeneration;
         synchronized (lock) {
             drainScheduled = false;
             if (disposed || pending.isEmpty()) {
                 return;
             }
             targetBrowser = browserSupplier.get();
-            if (targetBrowser == null || targetBrowser != queuedBrowser || disposedSupplier.getAsBoolean()) {
-                pending.clear();
+            targetPageGeneration = pageGeneration();
+            if (targetBrowser == null
+                    || targetBrowser != queuedBrowser
+                    || targetPageGeneration != queuedPageGeneration
+                    || disposedSupplier.getAsBoolean()) {
+                logAndClearPending("browser or page generation changed or became unavailable at drain time");
                 queuedBrowser = targetBrowser;
+                queuedPageGeneration = targetPageGeneration;
                 return;
             }
             draining = true;
-            batch = takeBatch(targetBrowser);
+            batch = takeBatch();
         }
 
         try {
-            scriptExecutor.accept(targetBrowser, buildBatchScript(batch));
+            scriptExecutor.accept(targetBrowser, targetPageGeneration, buildBatchScript(batch));
         } catch (Exception | LinkageError e) {
             LOG.warn("Failed to execute queued webview events: " + e.getMessage(), e);
         } finally {
@@ -215,16 +283,18 @@ final class WebviewEventQueue<T> {
         }
     }
 
-    private List<JsCall<T>> takeBatch(T targetBrowser) {
+    /**
+     * Takes the next batch from {@code pending}. Callers must hold the lock and
+     * have verified that the live browser/page generation still matches the
+     * queued ones — every pending entry carries exactly those values, so no
+     * per-entry staleness check is needed here.
+     */
+    private List<JsCall<T>> takeBatch() {
         List<JsCall<T>> batch = new ArrayList<>();
         int estimatedChars = 0;
         Iterator<JsCall<T>> iterator = pending.iterator();
         while (iterator.hasNext()) {
             JsCall<T> call = iterator.next();
-            if (call.browser != targetBrowser) {
-                iterator.remove();
-                continue;
-            }
             int callChars = call.estimatedChars();
             if (!batch.isEmpty()
                     && containsMessageSnapshot(batch)
@@ -357,12 +427,14 @@ final class WebviewEventQueue<T> {
 
     static final class JsCall<T> {
         private final T browser;
+        private final int pageGeneration;
         private final String functionName;
         private String[] args;
         private final String rawScript;
 
-        JsCall(T browser, String functionName, String[] args, String rawScript) {
+        JsCall(T browser, int pageGeneration, String functionName, String[] args, String rawScript) {
             this.browser = browser;
+            this.pageGeneration = pageGeneration;
             this.functionName = functionName;
             this.args = args;
             this.rawScript = rawScript;

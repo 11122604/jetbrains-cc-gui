@@ -5,6 +5,7 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
@@ -71,6 +72,55 @@ public class WebviewEventQueueTest {
         queue.dispose();
     }
 
+    @Test
+    public void dropsQueuedEventsWhenPageGenerationChanges() {
+        AtomicReference<Object> browser = new AtomicReference<>(new Object());
+        AtomicBoolean disposed = new AtomicBoolean();
+        AtomicInteger pageGeneration = new AtomicInteger(1);
+        List<Runnable> scheduled = new ArrayList<>();
+        List<String> scripts = new ArrayList<>();
+        WebviewEventQueue<Object> queue = new WebviewEventQueue<>(
+                browser::get,
+                disposed::get,
+                pageGeneration::get,
+                scheduled::add,
+                (ignoredBrowser, ignoredPageGeneration, script) -> scripts.add(script));
+
+        queue.enqueueRaw("window.showAskUserQuestionDialog('stale')");
+        pageGeneration.set(2);
+        queue.pageChanged();
+        scheduled.remove(0).run();
+
+        assertTrue("events from the previous page must not execute", scripts.isEmpty());
+        queue.dispose();
+    }
+
+    @Test
+    public void delayedOldPageEnqueueDoesNotEraseNewPageEvents() throws Exception {
+        Object browser = new Object();
+        AtomicInteger pageGeneration = new AtomicInteger(1);
+        List<Runnable> scheduled = new ArrayList<>();
+        List<String> scripts = new ArrayList<>();
+        WebviewEventQueue<Object> queue = new WebviewEventQueue<>(
+                () -> browser, () -> false, pageGeneration::get, scheduled::add,
+                (ignoredBrowser, ignoredPage, script) -> scripts.add(script));
+        WebviewEventQueue.JsCall<Object> delayedCall =
+                new WebviewEventQueue.JsCall<>(browser, 1, null, new String[0], "oldPage()");
+        pageGeneration.set(2);
+        queue.pageChanged();
+        queue.enqueueRaw("newPage()");
+
+        // Simulate an old sender waiting for the lock while a new-page event is queued.
+        java.lang.reflect.Method enqueue = WebviewEventQueue.class.getDeclaredMethod("enqueue", WebviewEventQueue.JsCall.class);
+        enqueue.setAccessible(true);
+        enqueue.invoke(queue, delayedCall);
+        scheduled.remove(0).run();
+
+        assertEquals(1, scripts.size());
+        assertTrue(scripts.get(0).contains("newPage()"));
+        org.junit.Assert.assertFalse(scripts.get(0).contains("oldPage()"));
+    }
+
     private static WebviewEventQueue<Object> newQueue(
             AtomicReference<Object> browser,
             AtomicBoolean disposed,
@@ -80,8 +130,9 @@ public class WebviewEventQueueTest {
         return new WebviewEventQueue<>(
                 browser::get,
                 disposed::get,
+                () -> 0,
                 scheduled::add,
-                (ignoredBrowser, script) -> scripts.add(script)
+                (ignoredBrowser, ignoredPageGeneration, script) -> scripts.add(script)
         );
     }
 }

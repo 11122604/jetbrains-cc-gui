@@ -611,6 +611,10 @@ public class ChatWindowDelegate {
             pushCurrentTabStateToFrontend();
         }
         host.getSessionLifecycleManager().sendCurrentPermissionMode();
+        // A page (re)load can silently drop the one-shot dialog-show injection,
+        // leaving the future blocked until the safety net fires with the dialog
+        // never shown. The webview is now ready, so replay whatever is pending.
+        host.getPermissionHandler().replayPendingDialogsToWebview();
         replayCurrentSessionStateToFrontend();
         if (runtimeRecovery) {
             refreshFrontendDerivedState();
