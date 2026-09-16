@@ -24,14 +24,23 @@ import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.components.JBList;
 import com.intellij.util.concurrency.AppExecutorUtil;
+import com.intellij.util.ui.UIUtil;
 import org.jetbrains.annotations.NotNull;
 
-import javax.swing.DefaultListCellRenderer;
+import javax.swing.BorderFactory;
 import javax.swing.JComponent;
+import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JPanel;
 import javax.swing.KeyStroke;
+import javax.swing.ListCellRenderer;
 import javax.swing.ListSelectionModel;
+import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.GridLayout;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -48,6 +57,15 @@ import java.util.List;
 public class FindAiHistoryAction extends AnAction implements DumbAware {
 
     private static final Logger LOG = Logger.getInstance(FindAiHistoryAction.class);
+
+    /** Max characters of a flattened preview shown on the second row of a popup item. */
+    private static final int PREVIEW_MAX_CHARS = 80;
+
+    /** Fixed height (px) of a two-line popup row. */
+    private static final int ROW_HEIGHT = 44;
+
+    /** Max rows visible before the popup list starts scrolling. */
+    private static final int MAX_VISIBLE_ROWS = 10;
 
     public FindAiHistoryAction() {
         super(ClaudeCodeGuiBundle.message("action.findAiHistory.text"),
@@ -105,17 +123,9 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
             return;
         }
         JBList<JsonObject> list = new JBList<>(hits);
-        list.setCellRenderer(new DefaultListCellRenderer() {
-            @Override
-            public Component getListCellRendererComponent(JList<?> list, Object value,
-                                                          int index, boolean isSelected, boolean cellHasFocus) {
-                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-                if (value instanceof JsonObject) {
-                    setText(buildDisplayText((JsonObject) value));
-                }
-                return this;
-            }
-        });
+        list.setCellRenderer(new SnippetCellRenderer());
+        list.setFixedCellHeight(ROW_HEIGHT);
+        list.setVisibleRowCount(MAX_VISIBLE_ROWS);
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
 
         final JBPopup[] popupHolder = new JBPopup[1];
@@ -152,8 +162,9 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
         popup.showInBestPositionFor(editor);
     }
 
-    /** 列表项显示文本：文件名 · 命中N行 [当前文件] + 片段预览。 */
-    private static String buildDisplayText(JsonObject hit) {
+    /** Popup row, line 1: file name and matched line range. The "current file" case is
+     *  conveyed by a colour stripe in the renderer, not by an inline text tag. */
+    static String buildItemTitle(JsonObject hit) {
         String filePath = hit.has("filePath") ? hit.get("filePath").getAsString() : "";
         String fileName = filePath;
         int slash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
@@ -161,13 +172,71 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
             fileName = filePath.substring(slash + 1);
         }
         String matched = hit.has("matchedLines") ? hit.get("matchedLines").getAsString() : "";
-        boolean sameFile = hit.has("sameFile") && hit.get("sameFile").getAsBoolean();
+        return fileName + " · 命中 " + matched + " 行";
+    }
+
+    /** Popup row, line 2: flattened code preview, truncated to PREVIEW_MAX_CHARS. */
+    static String buildItemPreview(JsonObject hit) {
         String preview = hit.has("preview") ? hit.get("preview").getAsString() : "";
-        if (preview.length() > 60) {
-            preview = preview.substring(0, 60) + "…";
+        if (preview.isEmpty()) {
+            return "";
         }
-        return fileName + " · 命中 " + matched + " 行" + (sameFile ? " [当前文件]" : "")
-                + (preview.isEmpty() ? "" : "  —  " + preview.replace('\n', ' ').replace('\r', ' '));
+        // Normalise CRLF first so a "\r\n" pair collapses to a single space, not two.
+        String flat = preview.replace("\r\n", "\n").replace('\r', '\n').replace('\n', ' ');
+        if (flat.length() > PREVIEW_MAX_CHARS) {
+            flat = flat.substring(0, PREVIEW_MAX_CHARS) + "…";
+        }
+        return flat;
+    }
+
+    /** Two-line row: title (file + matched lines) on top, code preview underneath. */
+    private static final class SnippetCellRenderer extends JPanel implements ListCellRenderer<JsonObject> {
+        private static final int SAME_FILE_STRIPE_WIDTH = 3;
+
+        private final JLabel titleLabel = new JLabel();
+        private final JLabel previewLabel = new JLabel();
+        private final JPanel stripe = new JPanel();
+
+        SnippetCellRenderer() {
+            setLayout(new BorderLayout(8, 0));
+            setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+
+            stripe.setPreferredSize(new Dimension(SAME_FILE_STRIPE_WIDTH, 0));
+            stripe.setOpaque(true);
+
+            JPanel text = new JPanel(new GridLayout(2, 1, 0, 2));
+            text.setOpaque(false);
+
+            Font base = UIUtil.getLabelFont();
+            titleLabel.setFont(base.deriveFont(Font.PLAIN));
+            previewLabel.setFont(base.deriveFont(base.getSize() - 1f));
+            previewLabel.setForeground(UIUtil.getContextHelpForeground());
+
+            text.add(titleLabel);
+            text.add(previewLabel);
+            add(stripe, BorderLayout.WEST);
+            add(text, BorderLayout.CENTER);
+        }
+
+        @Override
+        public Component getListCellRendererComponent(JList<? extends JsonObject> list, JsonObject value,
+                                                      int index, boolean isSelected, boolean cellHasFocus) {
+            boolean sameFile = value != null && value.has("sameFile")
+                    && value.get("sameFile").getAsBoolean();
+
+            titleLabel.setText(value == null ? "" : buildItemTitle(value));
+            previewLabel.setText(value == null ? "" : buildItemPreview(value));
+
+            Color bg = isSelected ? UIUtil.getListSelectionBackground(true) : UIUtil.getListBackground();
+            setBackground(bg);
+            setOpaque(true);
+            stripe.setBackground(sameFile ? UIUtil.getListSelectionBackground(true) : bg);
+
+            Color fg = isSelected ? UIUtil.getListSelectionForeground(true) : UIUtil.getLabelForeground();
+            titleLabel.setForeground(fg);
+            previewLabel.setForeground(isSelected ? fg : UIUtil.getContextHelpForeground());
+            return this;
+        }
     }
 
     /** 在新标签页载入命中的历史会话，前端定位到命中消息。 */
