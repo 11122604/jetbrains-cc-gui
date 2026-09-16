@@ -11,15 +11,15 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -149,19 +149,28 @@ class ClaudeSessionQueryService {
             process = pb.start();
             processManager.registerProcess(channelId, process);
 
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
+            // 在独立线程读取 stdout，保证 waitFor 的超时能够真正生效。
+            // readAllBytes 会一直阻塞到子进程退出并关闭流；若与 waitFor 串行执行，
+            // 一旦子进程挂起，读操作便永久阻塞，超时检查永远无法到达。
+            // 范式与 TokenTrackerHandler#runProcess 保持一致。
+            Process startedProcess = process;
+            CompletableFuture<String> outputFuture = CompletableFuture.supplyAsync(() -> {
+                try (InputStream in = startedProcess.getInputStream()) {
+                    return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    return "";
                 }
-            }
+            });
 
             boolean finished = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {
+                // 终止子进程会关闭管道写端，读线程随即读到 EOF 并退出
                 PlatformUtils.terminateProcess(process);
                 throw new RuntimeException("Node.js process timed out after " + PROCESS_TIMEOUT_SECONDS + " seconds");
             }
+
+            // 进程已退出，读线程正常情况下会立即结束；此处短超时仅作为兜底
+            output.append(outputFuture.get(5, TimeUnit.SECONDS));
         } finally {
             if (process != null) {
                 if (process.isAlive()) {
