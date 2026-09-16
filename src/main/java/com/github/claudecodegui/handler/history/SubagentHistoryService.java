@@ -376,6 +376,18 @@ class SubagentHistoryService {
         return PathUtils.getSanitizedPathCandidates(basePath);
     }
 
+    /**
+     * Return the preferred project key for callers that only need one location.
+     *
+     * <p>The single-key method remains as a compatibility seam for existing tests and
+     * integrations; subagent lookup uses {@link #projectKeys()} to support legacy paths.
+     *
+     * @return the canonical project key
+     */
+    private String projectKey() {
+        return projectKeys().get(0);
+    }
+
     private JsonArray readJsonl(Path file) throws IOException {
         JsonArray messages = new JsonArray();
         try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
