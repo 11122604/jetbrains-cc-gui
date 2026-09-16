@@ -17,9 +17,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -282,8 +282,19 @@ class SubagentHistoryService {
 
     private Path resolveSubagentFile(String sessionId, String agentId) {
         validateId("agentId", agentId);
-        Path projectDir = Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKey());
-        return projectDir.resolve(sessionId)
+        List<String> projectKeys = projectKeys();
+        for (String projectKey : projectKeys) {
+            Path file = Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKey)
+                    .resolve(sessionId)
+                    .resolve("subagents")
+                    .resolve("agent-" + agentId + ".jsonl")
+                    .normalize();
+            if (Files.isRegularFile(file)) {
+                return file;
+            }
+        }
+        return Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKeys.get(0))
+                .resolve(sessionId)
                 .resolve("subagents")
                 .resolve("agent-" + agentId + ".jsonl")
                 .normalize();
@@ -293,21 +304,36 @@ class SubagentHistoryService {
         if (description == null || description.isEmpty()) {
             throw new IllegalArgumentException("Missing agentId and description");
         }
-        Path subagentsDir = Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKey())
-                .resolve(sessionId)
-                .resolve("subagents")
-                .normalize();
-        if (!Files.isDirectory(subagentsDir)) {
-            return subagentsDir.resolve("missing.jsonl");
+
+        List<Path> subagentsDirs = new ArrayList<>();
+        for (String projectKey : projectKeys()) {
+            Path subagentsDir = Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKey)
+                    .resolve(sessionId)
+                    .resolve("subagents")
+                    .normalize();
+            if (Files.isDirectory(subagentsDir)) {
+                subagentsDirs.add(subagentsDir);
+            }
+        }
+        if (subagentsDirs.isEmpty()) {
+            return Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKeys().get(0))
+                    .resolve(sessionId)
+                    .resolve("subagents")
+                    .resolve("missing.jsonl");
         }
 
-        try (var stream = Files.list(subagentsDir)) {
-            Optional<Path> meta = stream
-                    .filter(path -> path.getFileName().toString().endsWith(".meta.json"))
-                    .filter(path -> description.equals(readDescription(path)))
-                    .max(Comparator.comparingLong(this::lastModifiedMillis));
-            return meta.map(this::metaToJsonl).orElse(subagentsDir.resolve("missing.jsonl"));
+        List<Path> metaFiles = new ArrayList<>();
+        for (Path subagentsDir : subagentsDirs) {
+            try (Stream<Path> stream = Files.list(subagentsDir)) {
+                stream.filter(path -> path.getFileName().toString().endsWith(".meta.json"))
+                        .filter(path -> description.equals(readDescription(path)))
+                        .forEach(metaFiles::add);
+            }
         }
+        return metaFiles.stream()
+                .max(Comparator.comparingLong(this::lastModifiedMillis))
+                .map(this::metaToJsonl)
+                .orElse(subagentsDirs.get(0).resolve("missing.jsonl"));
     }
 
     private String readDescription(Path metaFile) {
@@ -340,14 +366,26 @@ class SubagentHistoryService {
         return null;
     }
 
-    private String projectKey() {
+    private List<String> projectKeys() {
         String rawPath = context.getProject().getBasePath();
         String nodePath = NodeDetector.getInstance().getCachedNodePath();
         String basePath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
         if (basePath == null || basePath.isEmpty()) {
             throw new IllegalStateException("Project base path is null");
         }
-        return PathUtils.sanitizePath(basePath);
+        return PathUtils.getSanitizedPathCandidates(basePath);
+    }
+
+    /**
+     * Return the preferred project key for callers that only need one location.
+     *
+     * <p>The single-key method remains as a compatibility seam for existing tests and
+     * integrations; subagent lookup uses {@link #projectKeys()} to support legacy paths.
+     *
+     * @return the canonical project key
+     */
+    private String projectKey() {
+        return projectKeys().get(0);
     }
 
     private JsonArray readJsonl(Path file) throws IOException {
