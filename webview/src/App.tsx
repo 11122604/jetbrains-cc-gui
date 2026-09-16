@@ -48,6 +48,15 @@ import { useUIState } from './contexts/UIStateContext';
 import { useDialogs } from './contexts/DialogContext';
 import { AppDialogs } from './components/AppDialogs';
 import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from './utils/permissionDialogTimeout';
+import { collectMessageIds, findFocusTarget } from './utils/messageFocus';
+
+// --- G0: Find AI Edit History — locating the focused message ---
+// Poll instead of a single delay: on a large conversation the updateMessages push
+// and the resulting DOM render can take longer than any fixed delay.
+const FOCUS_POLL_INTERVAL_MS = 200;
+const FOCUS_MAX_ATTEMPTS = 30;
+/** How long the located message stays highlighted. */
+const FOCUS_HIGHLIGHT_MS = 10_000;
 
 const App = () => {
   const { t } = useTranslation();
@@ -561,26 +570,47 @@ const App = () => {
     };
   }, [loadHistorySession]);
 
-  // 会话载入后定位到命中消息（滚动 + 高亮），只定位一次后清空标记
+  // Locate the hit message once the session has loaded (scroll + highlight).
+  // Polls rather than firing a single delayed lookup, and falls back to the last
+  // assistant message when the id matches no rendered node.
   useEffect(() => {
     const targetId = pendingFocusMessageIdRef.current;
     if (!targetId) return;
-    // 等 updateMessages 推送到 DOM 后再定位
-    const timer = setTimeout(() => {
+
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts++;
       const container = messagesContainerRef.current;
-      if (!container) return;
-      const nodes = container.querySelectorAll<HTMLElement>('[data-message-id], [data-message-uuid]');
-      for (const node of nodes) {
-        if (node.dataset.messageId === targetId || node.dataset.messageUuid === targetId) {
-          node.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          node.classList.add('ai-focus-highlight');
-          window.setTimeout(() => node.classList.remove('ai-focus-highlight'), 3000);
-          pendingFocusMessageIdRef.current = null;
-          break;
-        }
+      const node = container ? findFocusTarget(container, targetId) : null;
+
+      if (node) {
+        window.clearInterval(timer);
+        node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        node.classList.add('ai-focus-highlight');
+        window.setTimeout(
+          () => node.classList.remove('ai-focus-highlight'),
+          FOCUS_HIGHLIGHT_MS,
+        );
+        pendingFocusMessageIdRef.current = null;
+        return;
       }
-    }, 400);
-    return () => window.clearTimeout(timer);
+
+      if (attempts >= FOCUS_MAX_ATTEMPTS) {
+        window.clearInterval(timer);
+        // Diagnostics: comparing the wanted id against the ids actually rendered
+        // separates "id mismatch" from "the node never rendered at all".
+        console.warn(
+          '[FindAiHistory] focus target not found. target=' + targetId
+          + ' domIds=' + JSON.stringify(
+            messagesContainerRef.current
+              ? collectMessageIds(messagesContainerRef.current)
+              : [],
+          ),
+        );
+      }
+    }, FOCUS_POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
   }, [messages, currentSessionId, messagesContainerRef]);
 
   const fableSdkWarningShownRef = useRef(false);
