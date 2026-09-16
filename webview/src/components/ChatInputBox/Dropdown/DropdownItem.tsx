@@ -205,6 +205,9 @@ export const DropdownItem = ({
             <div className="dropdown-item-description">{item.description}</div>
           )}
         </div>
+        {item.contentType && (
+          <span className="dropdown-item-type">{item.contentType}</span>
+        )}
       </div>
       {renderTooltip()}
     </>
