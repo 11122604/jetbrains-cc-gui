@@ -373,3 +373,38 @@ describe('MessageItem token usage display', () => {
     expect(screen.queryByText(/输入/)).toBeNull();
   });
 });
+
+// Regression: "Find AI Edit History" locates a message through these attributes.
+// History messages carry the ids at the top level, while streaming messages nest
+// them under `raw`. Both shapes must expose them, otherwise the focus lookup
+// silently matches nothing and the user is never taken to the edit.
+describe('MessageItem focus anchors', () => {
+  it('exposes ids for history-shaped messages (top-level message.id + uuid)', () => {
+    const message = {
+      type: 'assistant',
+      content: 'edited the file',
+      message: { id: 'msg_hist_1', content: [] },
+      uuid: 'uuid-hist-1',
+    } as unknown as ClaudeMessage;
+
+    const { container } = renderMessageItem(message);
+    const node = container.querySelector('.message');
+
+    expect(node?.getAttribute('data-message-id')).toBe('msg_hist_1');
+    expect(node?.getAttribute('data-message-uuid')).toBe('uuid-hist-1');
+  });
+
+  it('exposes ids for streaming-shaped messages (nested under raw)', () => {
+    const message = {
+      type: 'assistant',
+      content: 'edited the file',
+      raw: { message: { id: 'msg_stream_1', content: [] }, uuid: 'uuid-stream-1' },
+    } as unknown as ClaudeMessage;
+
+    const { container } = renderMessageItem(message);
+    const node = container.querySelector('.message');
+
+    expect(node?.getAttribute('data-message-id')).toBe('msg_stream_1');
+    expect(node?.getAttribute('data-message-uuid')).toBe('uuid-stream-1');
+  });
+});
