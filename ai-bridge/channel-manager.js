@@ -187,6 +187,19 @@ const providerHandlers = {
     const stdinData = await readStdinData(provider);
     console.error('[DIAG-EXEC] Stdin data received, keys:', stdinData ? Object.keys(stdinData) : 'null');
 
+    // Release stdin when it was not consumed. readStdinData() attaches
+    // readable/end listeners and resumes the stream while polling; its 5s
+    // timeout path only pauses it again, leaving the handle referenced so the
+    // event loop never empties. This script relies on natural exit to flush
+    // large output (see the IMPORTANT note below), so drop the handle here.
+    if (stdinData === null) {
+      try {
+        process.stdin.destroy();
+      } catch {
+        // stdin already destroyed or not destroyable - ignore
+      }
+    }
+
     // Dispatch to the appropriate provider handler
     console.error('[DIAG-EXEC] Dispatching to handler:', provider);
     const handler = providerHandlers[provider];

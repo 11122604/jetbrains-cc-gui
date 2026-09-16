@@ -149,10 +149,10 @@ class ClaudeSessionQueryService {
             process = pb.start();
             processManager.registerProcess(channelId, process);
 
-            // 在独立线程读取 stdout，保证 waitFor 的超时能够真正生效。
-            // readAllBytes 会一直阻塞到子进程退出并关闭流；若与 waitFor 串行执行，
-            // 一旦子进程挂起，读操作便永久阻塞，超时检查永远无法到达。
-            // 范式与 TokenTrackerHandler#runProcess 保持一致。
+            // Read stdout on a separate thread so waitFor's timeout still applies.
+            // readAllBytes blocks until the child exits and closes the stream; running
+            // it inline ahead of waitFor means a hung child blocks the read forever and
+            // the timeout check is never reached. Mirrors TokenTrackerHandler#runProcess.
             Process startedProcess = process;
             CompletableFuture<String> outputFuture = CompletableFuture.supplyAsync(() -> {
                 try (InputStream in = startedProcess.getInputStream()) {
@@ -164,12 +164,13 @@ class ClaudeSessionQueryService {
 
             boolean finished = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {
-                // 终止子进程会关闭管道写端，读线程随即读到 EOF 并退出
+                // Terminating the child closes the pipe's write end, so the reader hits EOF and exits
                 PlatformUtils.terminateProcess(process);
                 throw new RuntimeException("Node.js process timed out after " + PROCESS_TIMEOUT_SECONDS + " seconds");
             }
 
-            // 进程已退出，读线程正常情况下会立即结束；此处短超时仅作为兜底
+            // The process has exited, so the reader normally finishes right away;
+            // this short timeout is only a safety net
             output.append(outputFuture.get(5, TimeUnit.SECONDS));
         } finally {
             if (process != null) {
