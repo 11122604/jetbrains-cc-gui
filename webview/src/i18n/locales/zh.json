@@ -116,6 +116,8 @@
     "showEarlierMessages": "显示之前的 {{count}} 条消息",
     "showEarlierTurns": "显示更早的 {{count}} 轮对话（当前已加载还剩 {{remaining}} 轮）",
     "loadEarlierTurns": "从磁盘加载更早的 {{count}} 轮（共 {{total}} 轮，尚有 {{remaining}} 轮）",
+    "loadMoreAbove": "向上加载更早的消息",
+    "loadMoreBelow": "向下加载更晚的消息",
     "loadingEarlierTurns": "正在加载更早的对话...",
     "totalDuration": "本次耗时",
     "tokenUsage": "输入 {{input}} / 输出 {{output}}",
@@ -1401,6 +1403,9 @@
       "minutesAgo": "分钟前",
       "secondsAgo": "秒前"
     }
+  },
+  "aiHistory": {
+    "readOnlyBanner": "只读：该会话属于其他项目，已禁止发送新消息。"
   },
   "permission": {
     "dialogTitle": "权限请求",

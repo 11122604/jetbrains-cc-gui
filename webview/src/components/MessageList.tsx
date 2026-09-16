@@ -18,6 +18,31 @@ import {
 const INITIAL_VISIBLE_TURNS = 5;
 const REVEAL_TURN_PAGE_SIZE = 5;
 const HISTORY_DISK_PAGE_SIZE = 30;
+/** Focus-window mode: messages rendered either side of the focused hit. */
+const FOCUS_WINDOW_RADIUS = 5;
+/** Focus-window mode: messages added per scroll-triggered expansion. */
+const FOCUS_WINDOW_STEP = 20;
+/** Distance (px) from a focus-window edge at which the next slice is loaded. */
+const FOCUS_WINDOW_ROOT_MARGIN = '150px';
+
+/**
+ * True when the message exposes this id. Mirrors the identifiers MessageItem puts
+ * on the DOM (data-message-uuid / data-message-id), so a jump target stored from
+ * either one resolves to the same node.
+ */
+function messageCarriesId(message: ClaudeMessage, id: string): boolean {
+  const raw = typeof message.raw === 'object' && message.raw !== null
+    ? message.raw as Record<string, unknown>
+    : null;
+  const nested = raw?.message;
+  const nestedId = typeof nested === 'object' && nested !== null
+    ? (nested as { id?: string }).id
+    : undefined;
+  return (message as { uuid?: string }).uuid === id
+    || raw?.uuid === id
+    || (typeof message.id === 'string' && message.id === id)
+    || nestedId === id;
+}
 
 function isHumanUserMessage(message: ClaudeMessage): boolean {
   if (message.type !== 'user') return false;
@@ -124,6 +149,29 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   currentSessionId,
 }, ref) {
   const [revealedTurnCount, setRevealedTurnCount] = useState(0);
+  // Focus-window mode. While `focusAnchor` is set, only a slice of the transcript
+  // around that message index is rendered, so jumping to an old hit in a large
+  // session does not have to render every message. Left null (the default) the
+  // turn-based collapse below behaves exactly as before.
+  const [focusAnchor, setFocusAnchor] = useState<number | null>(null);
+  const [focusUpExtra, setFocusUpExtra] = useState(0);
+  const [focusDownExtra, setFocusDownExtra] = useState(0);
+  /**
+   * Set once the user has expanded the window all the way to the end of the
+   * transcript: from then on the window tracks the tail, so messages arriving
+   * during an ongoing conversation still render.
+   */
+  const [focusFollowTail, setFocusFollowTail] = useState(false);
+  const topSentinelRef = useRef<HTMLDivElement | null>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
+  /** scrollHeight captured just before an upward expansion, to keep the viewport still. */
+  const pendingUpScrollRef = useRef(0);
+  const exitFocusWindow = useCallback(() => {
+    setFocusAnchor(null);
+    setFocusUpExtra(0);
+    setFocusDownExtra(0);
+    setFocusFollowTail(false);
+  }, []);
   const [historyPageInfo, setHistoryPageInfo] = useState<CodexHistoryPageInfo | null>(null);
   const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
   const loadingEarlierHistoryRef = useRef(false);
@@ -248,6 +296,88 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
     }
   }, [canLoadEarlierFromDisk, currentSessionId, hiddenTurnCount, historyPageInfo]);
 
+  // ── Focus-window mode ────────────────────────────────────────────────────────
+  // Rendered slice while focused: [anchor - radius - upExtra, anchor + radius + downExtra].
+  const focusWindow = useMemo(() => {
+    if (focusAnchor === null) return null;
+    return {
+      start: Math.max(0, focusAnchor - FOCUS_WINDOW_RADIUS - focusUpExtra),
+      end: focusFollowTail
+        ? messages.length
+        : Math.min(messages.length, focusAnchor + FOCUS_WINDOW_RADIUS + 1 + focusDownExtra),
+    };
+  }, [focusAnchor, focusUpExtra, focusDownExtra, focusFollowTail, messages.length]);
+
+  // The scrolling ancestor (ChatScreen owns it) — needed to compensate scrollTop
+  // when the window grows upwards, and to detect "scrolled to the end".
+  const getScrollContainer = useCallback((): HTMLElement | null => {
+    const el = containerRef.current;
+    if (!el) return null;
+    return (el.closest('.messages-container') as HTMLElement | null) ?? el.parentElement;
+  }, []);
+
+  const expandFocusUp = useCallback(() => {
+    const container = getScrollContainer();
+    // The content above the viewport grows, which would push the anchor down.
+    // Remember the pre-expansion height so the layout effect can undo the shift.
+    pendingUpScrollRef.current = container ? container.scrollHeight : 0;
+    setFocusUpExtra((prev) => prev + FOCUS_WINDOW_STEP);
+  }, [getScrollContainer]);
+
+  const expandFocusDown = useCallback(() => {
+    setFocusDownExtra((prev) => {
+      const next = prev + FOCUS_WINDOW_STEP;
+      // Reaching the end switches the window to tail-following, so new messages
+      // keep rendering while the conversation continues.
+      if (focusAnchor !== null
+          && focusAnchor + FOCUS_WINDOW_RADIUS + 1 + next >= messages.length) {
+        setFocusFollowTail(true);
+      }
+      return next;
+    });
+  }, [focusAnchor, messages.length]);
+
+  useLayoutEffect(() => {
+    const heightBefore = pendingUpScrollRef.current;
+    if (heightBefore <= 0) return;
+    pendingUpScrollRef.current = 0;
+    const container = getScrollContainer();
+    if (container) {
+      container.scrollTop += container.scrollHeight - heightBefore;
+    }
+  }, [focusUpExtra, getScrollContainer]);
+
+  // Scroll-driven expansion: the sentinels sit just past each edge of the window,
+  // so scrolling towards one pulls in the next slice.
+  useEffect(() => {
+    if (!focusWindow) return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        if (entry.target === topSentinelRef.current && focusWindow.start > 0) {
+          expandFocusUp();
+        } else if (entry.target === bottomSentinelRef.current
+            && focusWindow.end < messages.length) {
+          expandFocusDown();
+        }
+      }
+    }, { rootMargin: FOCUS_WINDOW_ROOT_MARGIN });
+    if (topSentinelRef.current) observer.observe(topSentinelRef.current);
+    if (bottomSentinelRef.current) observer.observe(bottomSentinelRef.current);
+    return () => observer.disconnect();
+  }, [focusWindow, messages.length, expandFocusUp, expandFocusDown]);
+
+  // A different session must never inherit the previous one's window.
+  useEffect(() => {
+    exitFocusWindow();
+  }, [currentSessionId, exitFocusWindow]);
+
+  // Focus mode is deliberately NOT exited automatically: leaving it would restore
+  // the turn-based collapse, which renders less than the current window and could
+  // hide the very message we just jumped to. It ends on session change, on an
+  // explicit revealAll, or implicitly once the user expands to the tail
+  // (focusFollowTail keeps that state following new messages).
+
   // Imperative API so the in-page search can expand everything before scanning.
   // Returns the number of messages that were just revealed (0 when nothing
   // was collapsed). This lets the search panel surface "Expanded N earlier
@@ -255,16 +385,34 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   useImperativeHandle(ref, (): MessageListRevealHandle => ({
     revealAll: () => {
       const previouslyHidden = collapsedCount;
-      if (previouslyHidden === 0) return 0;
+      // Leave focus mode first: a caller asking for "everything" must not keep
+      // getting a window. Then reveal all turns as before.
+      exitFocusWindow();
       setRevealedTurnCount(userTurnStartIndexes.length);
       return previouslyHidden;
     },
-  }), [collapsedCount, userTurnStartIndexes.length]);
+    focusMessage: (messageIds: string | string[]) => {
+      const ids = (Array.isArray(messageIds) ? messageIds : [messageIds])
+        .filter((id) => typeof id === 'string' && id.length > 0);
+      if (ids.length === 0) return false;
+      const index = messages.findIndex(
+        (message) => ids.some((candidate) => messageCarriesId(message, candidate)),
+      );
+      if (index < 0) return false;
+      setFocusAnchor(index);
+      setFocusUpExtra(0);
+      setFocusDownExtra(0);
+      setFocusFollowTail(false);
+      return true;
+    },
+  }), [collapsedCount, userTurnStartIndexes.length, messages, exitFocusWindow]);
 
   // Notify parent of collapsed count changes (for anchor rail sync)
   useLayoutEffect(() => {
-    onCollapsedCountChange?.(collapsedCount);
-  }, [collapsedCount, onCollapsedCountChange]);
+    // In focus mode report what the window hides above it, so the anchor rail
+    // still has a meaningful "collapsed" marker to work with.
+    onCollapsedCountChange?.(focusWindow ? focusWindow.start : collapsedCount);
+  }, [collapsedCount, focusWindow, onCollapsedCountChange]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -277,10 +425,13 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
     return () => window.removeEventListener(DETAILED_OUTPUT_ENABLED_EVENT, handler);
   }, []);
 
-  const visibleMessages = useMemo(
-    () => (shouldCollapse ? messages.slice(collapsedCount) : messages),
-    [messages, shouldCollapse, collapsedCount]
-  );
+  // Focus mode renders a slice around the hit; otherwise the turn-based collapse
+  // decides. `visibleOffset` maps a rendered item back to its index in `messages`.
+  const visibleMessages = useMemo(() => {
+    if (focusWindow) return messages.slice(focusWindow.start, focusWindow.end);
+    return shouldCollapse ? messages.slice(collapsedCount) : messages;
+  }, [messages, shouldCollapse, collapsedCount, focusWindow]);
+  const visibleOffset = focusWindow ? focusWindow.start : (shouldCollapse ? collapsedCount : 0);
   return (
     <div ref={containerRef} onContextMenu={handleMessageContextMenu}>
       {ctxMenu.visible && (
@@ -294,7 +445,7 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
           ]}
         />
       )}
-      {(shouldCollapse || canLoadEarlierFromDisk) && (
+      {!focusWindow && (shouldCollapse || canLoadEarlierFromDisk) && (
         <div
           className="collapsed-messages-indicator"
           onClick={handleRevealMore}
@@ -315,8 +466,18 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
         </div>
       )}
 
+      {focusWindow && focusWindow.start > 0 && (
+        <div
+          ref={topSentinelRef}
+          className="collapsed-messages-indicator"
+          onClick={expandFocusUp}
+        >
+          {t('chat.loadMoreAbove', 'Load earlier messages')}
+        </div>
+      )}
+
       {visibleMessages.map((message, visibleIndex) => {
-        const messageIndex = shouldCollapse ? visibleIndex + collapsedCount : visibleIndex;
+        const messageIndex = visibleIndex + visibleOffset;
         const messageKey = messageKeys[messageIndex];
         const toolResultSignature = getMessageToolResultSignature(message, messageIndex, getContentBlocks, findToolResult);
 
@@ -343,6 +504,16 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
           />
         );
       })}
+
+      {focusWindow && focusWindow.end < messages.length && (
+        <div
+          ref={bottomSentinelRef}
+          className="collapsed-messages-indicator"
+          onClick={expandFocusDown}
+        >
+          {t('chat.loadMoreBelow', 'Load later messages')}
+        </div>
+      )}
 
       {/* Loading indicator */}
       {loading && <WaitingIndicator startTime={loadingStartTime ?? undefined} />}

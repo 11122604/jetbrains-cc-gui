@@ -46,4 +46,11 @@ export interface ConversationSearchHandle {
 export interface MessageListRevealHandle {
   /** Reveal every message currently hidden behind the "show earlier" indicator. */
   revealAll: () => number;
+  /**
+   * Enter focus-window mode centred on the message carrying this id: only a small
+   * slice around it is rendered, and the window grows as the user scrolls to its
+   * edges. Lets a large session jump to an old hit without rendering the whole
+   * transcript. Returns false when no loaded message carries that id.
+   */
+  focusMessage: (messageIds: string | string[]) => boolean;
 }

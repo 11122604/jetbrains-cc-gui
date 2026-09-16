@@ -48,17 +48,40 @@ import { useUIState } from './contexts/UIStateContext';
 import { useDialogs } from './contexts/DialogContext';
 import { AppDialogs } from './components/AppDialogs';
 import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from './utils/permissionDialogTimeout';
-import { collectMessageIds, findExactTarget, findFallbackTarget } from './utils/messageFocus';
+import {
+  collectMessageIds,
+  expandCollapsedToolBlocks,
+  findExactTarget,
+  findFallbackTarget,
+  findSnippetElement,
+} from './utils/messageFocus';
 
 // --- G0: Find AI Edit History — locating the focused message ---
 // Poll instead of a single delay: on a large conversation the updateMessages push
 // and the resulting DOM render can take longer than any fixed delay.
 const FOCUS_POLL_INTERVAL_MS = 200;
-const FOCUS_MAX_ATTEMPTS = 30;
+/**
+ * Hard cap on how long we keep looking for the target before giving up. A large
+ * session (thousands of messages) must render every revealed turn first, which
+ * can take far longer than a fixed attempt count allowed.
+ */
+const FOCUS_MAX_POLL_MS = 60_000;
+/**
+ * Once history has been revealed, give up only after the DOM has stopped growing
+ * for this many consecutive polls — rendering thousands of messages is bursty,
+ * so a fixed budget either gives up too early or waits too long.
+ */
+const FOCUS_STABLE_POLLS = 20;
 /** Attempts to wait before revealing collapsed history and retrying. */
 const FOCUS_REVEAL_AFTER_ATTEMPTS = 3;
 /** How long the located message stays highlighted. */
 const FOCUS_HIGHLIGHT_MS = 10_000;
+/** Time allowed for the smooth jump to finish before resuming normal scroll handling. */
+const FOCUS_SCROLL_SETTLE_MS = 800;
+/** Retry cadence while waiting for collapsed Edit blocks to re-render their diff lines. */
+const FOCUS_LINE_RETRY_MS = 400;
+/** How many times to retry locating the matched code line inside the message. */
+const FOCUS_LINE_MAX_ATTEMPTS = 8;
 
 const App = () => {
   const { t } = useTranslation();
@@ -321,7 +344,7 @@ const App = () => {
     forceCreateNewSessionWithProvider,
     handleConfirmNewSession, handleCancelNewSession,
     handleConfirmInterrupt, handleCancelInterrupt,
-    loadHistorySession, deleteHistorySession, deleteHistorySessions, exportHistorySession,
+    loadHistorySession, historyReadOnly, deleteHistorySession, deleteHistorySessions, exportHistorySession,
     toggleFavoriteSession, updateHistoryTitle, applyHistoryTitleLocal, convertToCliSession,
   } = useSessionManagement({
     messages, loading, historyData, currentSessionId, currentSessionIdRef, currentProvider,
@@ -544,17 +567,42 @@ const App = () => {
   // until the backend reports status or when the SDK isn't installed — never warn
   // in those cases to avoid false positives.
   // --- G0: 查找 AI 修改历史 → 新 tab 载入会话 + 定位到命中消息 ---
-  const pendingFocusMessageIdRef = useRef<string | null>(null);
+  // Candidate ids for the message to locate. The index stores both the line's own
+  // uuid and the merge run's first uuid, because the webview may render the blocks
+  // inside a merged assistant node carrying the latter; whichever the DOM exposes
+  // is used.
+  const pendingFocusIdsRef = useRef<string[] | null>(null);
+  /** 命中行原文：跳到消息后再用它精确定位到那一行代码。 */
+  const pendingFocusTextRef = useRef<string | null>(null);
 
   // 新 tab 前端就绪后由 Java 注入：载入历史会话 + 记录待定位消息
   useEffect(() => {
     const handler = (json: string) => {
       try {
-        const req = JSON.parse(json) as { sessionId: string; provider: string; messageId?: string };
-        if (req.messageId) {
-          pendingFocusMessageIdRef.current = req.messageId;
+        const req = JSON.parse(json) as {
+          sessionId: string;
+          provider: string;
+          messageId?: string;
+          messageIdAlt?: string;
+          matchText?: string;
+          cwd?: string;
+          readOnly?: boolean;
+        };
+        const candidates = [req.messageId, req.messageIdAlt]
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        if (candidates.length > 0) {
+          pendingFocusIdsRef.current = candidates;
         }
-        loadHistorySession(req.sessionId, req.provider);
+        pendingFocusTextRef.current = typeof req.matchText === 'string' && req.matchText.trim()
+          ? req.matchText
+          : null;
+        loadHistorySession(
+          req.sessionId,
+          req.provider,
+          undefined,
+          undefined,
+          req.cwd ? { cwd: req.cwd, readOnly: req.readOnly === true } : undefined,
+        );
       } catch {
         // 忽略非法 JSON
       }
@@ -576,65 +624,144 @@ const App = () => {
   //
   // Exact match first. A long session is rendered collapsed behind the "show
   // earlier turns" indicator, so the target node may not be in the DOM at all;
-  // in that case reveal the collapsed turns and retry. Only after every attempt
-  // fails do we fall back to the last assistant message, so that the fallback
-  // can never mask a target that merely needed the history expanded.
+  // in that case reveal the collapsed turns and keep retrying. Only once the DOM
+  // has stopped growing (or the hard cap is hit) do we fall back to the last
+  // assistant message, so the fallback can never mask a target that merely
+  // needed more time to render.
   useEffect(() => {
-    const targetId = pendingFocusMessageIdRef.current;
-    if (!targetId) return;
+    const targetIds = pendingFocusIdsRef.current;
+    if (!targetIds || targetIds.length === 0) return;
+    const targetLabel = targetIds.join(',');
 
     let attempts = 0;
-    let revealTried = false;
+    let windowAttempted = false;
     let timer = 0;
+    let lastNodeCount = -1;
+    let stablePolls = 0;
+    const startedAt = Date.now();
 
     const focus = (node: HTMLElement) => {
       window.clearInterval(timer);
+      // Jumping to an old hit is a deliberate move away from the live tail. Mark it as
+      // an auto-scroll (so the scroll handler does not read it as a user scroll and
+      // clobber the flags) and pause following, otherwise useScrollBehavior's
+      // scroll-to-bottom effect snaps the view back as soon as the session finishes
+      // loading.
+      isAutoScrollingRef.current = true;
+      userPausedRef.current = true;
       node.scrollIntoView({ block: 'center', behavior: 'smooth' });
       node.classList.add('ai-focus-highlight');
       window.setTimeout(
         () => node.classList.remove('ai-focus-highlight'),
         FOCUS_HIGHLIGHT_MS,
       );
-      pendingFocusMessageIdRef.current = null;
+      window.setTimeout(() => {
+        isAutoScrollingRef.current = false;
+      }, FOCUS_SCROLL_SETTLE_MS);
+      pendingFocusIdsRef.current = null;
+
+      // The message may be a very long merged block, so centre the matched code line
+      // itself rather than leaving the viewport somewhere inside it. Collapsed Edit
+      // blocks render no diff lines, so open them and retry while React re-renders.
+      const snippetText = pendingFocusTextRef.current;
+      if (snippetText) {
+        pendingFocusTextRef.current = null;
+        focusSnippetLine(node, snippetText, 0);
+      }
+    };
+
+    const focusSnippetLine = (messageNode: HTMLElement, text: string, attempt: number) => {
+      const found = findSnippetElement(messageNode, text);
+      if (found) {
+        found.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        found.classList.add('ai-focus-line');
+        window.setTimeout(() => found.classList.remove('ai-focus-line'), FOCUS_HIGHLIGHT_MS);
+        return;
+      }
+      if (attempt === 0) {
+        // Collapsed Edit blocks render no diff lines — open them and retry.
+        expandCollapsedToolBlocks(messageNode);
+      }
+      if (attempt < FOCUS_LINE_MAX_ATTEMPTS) {
+        window.setTimeout(() => focusSnippetLine(messageNode, text, attempt + 1),
+          FOCUS_LINE_RETRY_MS);
+      }
+    };
+
+    // Last resort: the target never showed up, so scroll somewhere near it rather
+    // than leaving the view where it was. Comparing the wanted id against the ids
+    // actually rendered separates "id mismatch" from "node never rendered".
+    const giveUp = (container: HTMLElement | null) => {
+      window.clearInterval(timer);
+      pendingFocusTextRef.current = null;
+      const fallback = container ? findFallbackTarget(container) : null;
+      if (fallback) {
+        focus(fallback);
+      }
+      // Comparing the wanted id against the ids actually rendered separates
+      // "id mismatch" from "the node never rendered at all".
+      console.warn(
+        '[FindAiHistory] focus target not found. target=' + targetLabel
+        + ' domIds=' + JSON.stringify(container ? collectMessageIds(container, 30) : []),
+      );
     };
 
     timer = window.setInterval(() => {
       attempts++;
       const container = messagesContainerRef.current;
 
-      const exact = container ? findExactTarget(container, targetId) : null;
+      // Try every candidate id: the index stores both the line's own uuid and the
+      // merge run's first uuid, and only one of them is on the rendered node.
+      let exact: HTMLElement | null = null;
+      if (container) {
+        for (const candidate of targetIds) {
+          exact = findExactTarget(container, candidate);
+          if (exact) break;
+        }
+      }
       if (exact) {
         focus(exact);
         return;
       }
 
-      // The target is probably still hidden behind the collapsed-history
-      // indicator — expand once, then restart the attempt budget.
-      if (!revealTried && attempts >= FOCUS_REVEAL_AFTER_ATTEMPTS) {
-        revealTried = true;
-        if ((messageListRef.current?.revealAll() ?? 0) > 0) {
-          attempts = 0;
-          return;
-        }
+      // Mid-transition the list is deliberately empty; wait for the loaded snapshot
+      // instead of searching — and falling back — against nothing. This effect re-runs
+      // when those messages land, restarting the budget with the real list.
+      if (messages.length === 0) return;
+
+      // The target is probably in a turn the list is not rendering — ask it to open
+      // a window around the hit instead of expanding the whole transcript (which on
+      // a multi-thousand-message session would render everything at once).
+      if (!windowAttempted && attempts >= FOCUS_REVEAL_AFTER_ATTEMPTS) {
+        windowAttempted = true;
+        messageListRef.current?.focusMessage(targetIds);
       }
 
-      if (attempts >= FOCUS_MAX_ATTEMPTS) {
-        window.clearInterval(timer);
-        const fallback = container ? findFallbackTarget(container) : null;
-        if (fallback) {
-          focus(fallback);
-        }
-        // Comparing the wanted id against the ids actually rendered separates
-        // "id mismatch" from "the node never rendered at all".
-        console.warn(
-          '[FindAiHistory] focus target not found. target=' + targetId
-          + ' domIds=' + JSON.stringify(container ? collectMessageIds(container) : []),
-        );
+      // Revealing thousands of messages renders in bursts, so gate the fallback on the
+      // DOM having stopped growing rather than on a fixed attempt count.
+      const nodeCount = container
+        ? container.querySelectorAll('[data-message-id], [data-message-uuid]').length
+        : 0;
+      if (nodeCount > lastNodeCount) {
+        lastNodeCount = nodeCount;
+        stablePolls = 0;
+      } else {
+        stablePolls++;
       }
+
+      // Once the window is open — or the id is provably not in the list — nothing but
+      // rendering remains, so give up only after the DOM has stopped growing; this
+      // avoids mistaking a long render burst for a miss.
+      const settled = messages.length > 0 && windowAttempted;
+      const exhausted = Date.now() - startedAt >= FOCUS_MAX_POLL_MS
+        || (settled && stablePolls >= FOCUS_STABLE_POLLS);
+      if (!exhausted) return;
+
+      giveUp(container);
     }, FOCUS_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(timer);
-  }, [messages, currentSessionId, messagesContainerRef]);
+  }, [messages, currentSessionId, messagesContainerRef, isAutoScrollingRef, userPausedRef]);
 
   const fableSdkWarningShownRef = useRef(false);
   useEffect(() => {
@@ -782,6 +909,7 @@ const App = () => {
               onLongContextChange={handleLongContextChange}
               messageQueue={messageQueue}
               onRemoveFromQueue={dequeueMessage}
+              historyReadOnly={historyReadOnly}
             />
           </div>
           {currentView === 'history' && (

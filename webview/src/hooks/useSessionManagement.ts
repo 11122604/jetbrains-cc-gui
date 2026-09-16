@@ -56,7 +56,15 @@ interface UseSessionManagementReturn {
   handleCancelNewSession: () => void;
   handleConfirmInterrupt: () => void;
   handleCancelInterrupt: () => void;
-  loadHistorySession: (sessionId: string, provider?: string, model?: string, agent?: string) => void;
+  loadHistorySession: (
+    sessionId: string,
+    provider?: string,
+    model?: string,
+    agent?: string,
+    options?: { cwd?: string; readOnly?: boolean },
+  ) => void;
+  /** 正在查看其他项目的会话时为 true：禁止发送新消息（跨项目只读）。 */
+  historyReadOnly: boolean;
   deleteHistorySession: (sessionId: string) => void;
   deleteHistorySessions: (sessionIds: string[]) => void;
   exportHistorySession: (sessionId: string, title: string) => void;
@@ -97,6 +105,8 @@ export function useSessionManagement({
 }: UseSessionManagementOptions): UseSessionManagementReturn {
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
   const [showInterruptConfirm, setShowInterruptConfirm] = useState(false);
+  // 跨项目查看会话时进入只读；任何会话切换/新建都在 beginSessionTransition 复位
+  const [historyReadOnly, setHistoryReadOnly] = useState(false);
   const pendingActionRef = useRef<'newSession' | null>(null);
   const suppressNextStatusToastRef = useRef(false);
   const transitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -131,6 +141,7 @@ export function useSessionManagement({
       setStreamingActive(false);
     }
     setMessages([]);
+    setHistoryReadOnly(false);
     // Drop async subagent events from the prior session: tool_use_ids are
     // globally unique so stale entries cannot mislabel the new session's
     // agents, but leaving them would grow the map without bound.
@@ -264,11 +275,15 @@ export function useSessionManagement({
     provider?: string,
     model?: string,
     agent?: string,
+    options?: { cwd?: string; readOnly?: boolean },
   ) => {
     const session = historyDataRef.current?.sessions?.find(s => s.sessionId === sessionId);
     const effectiveProvider = provider || session?.provider || currentProvider || 'claude';
     const effectiveModel = (model || session?.model || '').trim();
     const effectiveAgent = (agent || session?.agent || '').trim();
+    const effectiveCwd = (options?.cwd || '').trim();
+    const readOnly = options?.readOnly === true;
+    setHistoryReadOnly(readOnly);
 
     // Restore the session's model/agent in the UI before (or with) the load so
     // the next send continues with the same selection the history used.
@@ -288,6 +303,7 @@ export function useSessionManagement({
         sessionId,
         provider: effectiveProvider,
         ...(effectiveModel ? { model: effectiveModel } : {}),
+        ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
       }));
       setCurrentView('chat');
       return;
@@ -299,10 +315,14 @@ export function useSessionManagement({
       sendBridgeEvent('interrupt_session');
     }
     beginSessionTransition(sessionId, session?.title ?? null);
+    // beginSessionTransition resets read-only to false, so re-apply it after the
+    // transition — otherwise a cross-project (read-only) session ends up editable.
+    setHistoryReadOnly(readOnly);
     sendBridgeEvent('load_session', JSON.stringify({
       sessionId,
       provider: effectiveProvider,
       ...(effectiveModel ? { model: effectiveModel } : {}),
+      ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
     }));
     setCurrentView('chat');
   }, [applyHistoryModel, beginSessionTransition, currentProvider, loading, setCurrentView, currentSessionId]);
@@ -509,6 +529,7 @@ export function useSessionManagement({
     handleConfirmInterrupt,
     handleCancelInterrupt,
     loadHistorySession,
+    historyReadOnly,
     deleteHistorySession,
     deleteHistorySessions,
     exportHistorySession,

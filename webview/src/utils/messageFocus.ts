@@ -60,6 +60,53 @@ export function findFocusTarget(
 }
 
 /**
+ * Locate the rendered element carrying one specific line of the matched snippet.
+ *
+ * Edit tool blocks render their diff one `<pre>` per line, so an exact text match
+ * pins the edited line precisely inside what may be a very long merged message.
+ * Falls back to the first element whose own text contains the line, for snippets
+ * rendered outside a diff block.
+ */
+export function findSnippetElement(root: HTMLElement, matchText: string): HTMLElement | null {
+  const needle = matchText.trim();
+  if (!needle) return null;
+
+  const pres = root.querySelectorAll<HTMLElement>('pre');
+  for (const pre of pres) {
+    if ((pre.textContent ?? '').trim() === needle) return pre;
+  }
+  for (const pre of pres) {
+    if ((pre.textContent ?? '').includes(needle)) return pre;
+  }
+
+  const leaves = root.querySelectorAll<HTMLElement>('p, li, td, span, div');
+  for (const el of leaves) {
+    if (el.children.length === 0 && (el.textContent ?? '').trim().includes(needle)) {
+      return el;
+    }
+  }
+  return null;
+}
+
+/**
+ * Open the Edit tool blocks inside a message so their diff lines are rendered.
+ * A collapsed block has no `.task-details`; clicking its `.task-header` toggles it
+ * (the same control the user clicks). Returns how many were opened.
+ */
+export function expandCollapsedToolBlocks(root: HTMLElement): number {
+  let opened = 0;
+  for (const container of root.querySelectorAll<HTMLElement>('.task-container')) {
+    if (container.querySelector('.task-details')) continue;
+    const header = container.querySelector<HTMLElement>('.task-header');
+    if (header) {
+      header.click();
+      opened += 1;
+    }
+  }
+  return opened;
+}
+
+/**
  * Collect the ids actually present in the container, for diagnostics when focus
  * fails — this is what distinguishes "id mismatch" from "node never rendered"
  * (e.g. the message is still behind the collapsed-history indicator).

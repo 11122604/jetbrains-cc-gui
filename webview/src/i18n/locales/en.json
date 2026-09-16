@@ -116,6 +116,8 @@
     "showEarlierMessages": "Show {{count}} earlier messages",
     "showEarlierTurns": "Show {{count}} earlier turns ({{remaining}} loaded turns remaining)",
     "loadEarlierTurns": "Load {{count}} earlier turns from disk ({{remaining}} of {{total}} remaining)",
+    "loadMoreAbove": "Load earlier messages",
+    "loadMoreBelow": "Load later messages",
     "loadingEarlierTurns": "Loading earlier turns...",
     "totalDuration": "This reply took",
     "tokenUsage": "{{input}} in / {{output}} out",
@@ -1396,6 +1398,9 @@
       "minutesAgo": "minutes ago",
       "secondsAgo": "seconds ago"
     }
+  },
+  "aiHistory": {
+    "readOnlyBanner": "Read-only: this session belongs to another project. Sending new messages is disabled."
   },
   "permission": {
     "dialogTitle": "Permission Request",

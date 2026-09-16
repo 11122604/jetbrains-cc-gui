@@ -20,6 +20,34 @@ import java.util.List;
  */
 public final class EditSnippetExtractor {
 
+    /**
+     * Per-file context shared by every line of one session transcript.
+     *
+     * <p>Reopening a session needs the directory the transcript actually lives in: a
+     * message's own cwd may be a SUBDIRECTORY of that project, and resolving the file
+     * from a subdirectory finds nothing. {@code projectRoot} is a real path whose Claude
+     * project key equals that directory (so the file resolves and the session keeps a
+     * sane working directory); {@code projectDir} is the directory name itself, used when
+     * no such path is present in the transcript.
+     */
+    public static final class FileContext {
+        private final String projectDir;
+        private final String projectRoot;
+
+        public FileContext(String projectDir, String projectRoot) {
+            this.projectDir = projectDir;
+            this.projectRoot = projectRoot;
+        }
+
+        public String getProjectDir() {
+            return projectDir;
+        }
+
+        public String getProjectRoot() {
+            return projectRoot;
+        }
+    }
+
     /** 单条片段最大长度，防止 Write 整文件写入导致索引膨胀（设计确认 50KB）。 */
     public static final int MAX_SNIPPET_LEN = 50 * 1024;
 
@@ -37,20 +65,22 @@ public final class EditSnippetExtractor {
      * @param provider  provider 名（如 "claude"）
      */
     public static List<EditSnippet> extractLine(String jsonlLine, String provider) {
-        return extractLine(jsonlLine, provider, null);
+        return extractLine(jsonlLine, provider, null, null);
     }
 
     /**
-     * As {@link #extractLine(String, String)}, but stores {@code messageIdOverride} as the
+     * As {@link #extractLine(String, String)}, but stores {@code renderedMessageUuid} as the
      * message id whenever it is non-null.
      *
-     * <p>Claude writes a single API message across several consecutive jsonl lines that share
-     * {@code message.id} yet carry distinct {@code uuid}s. The webview merges such a group into
-     * one node exposing the <em>first</em> uuid, so every line of the group must be indexed
-     * under that same uuid. Indexing a later line under its own uuid stores an id no DOM node
-     * ever carries, and the focus lookup can never match.
+     * <p>The webview merges consecutive assistant messages into a single rendered node
+     * (see {@code buildMergedAssistantMessage} in messageUtils.ts): it combines the content
+     * blocks of every message in the merge run and keeps the FIRST message's fields,
+     * including its {@code raw.uuid}. A tool_use on a later line of that run therefore
+     * renders inside a node identified by the run's first uuid — indexing such a line under
+     * its own uuid stores an id no DOM node ever carries, and the jump can never match.
      */
-    public static List<EditSnippet> extractLine(String jsonlLine, String provider, String messageIdOverride) {
+    public static List<EditSnippet> extractLine(String jsonlLine, String provider,
+                                                String renderedMessageUuid, FileContext fileContext) {
         List<EditSnippet> result = new ArrayList<>();
         if (jsonlLine == null || jsonlLine.trim().isEmpty()) {
             return result;
@@ -76,14 +106,20 @@ public final class EditSnippetExtractor {
         }
 
         String sessionId = top.has("sessionId") ? top.get("sessionId").getAsString() : "";
-        // The identifier the webview can actually locate is the top-level `uuid` — that is
-        // what MessageItem renders as data-message-uuid. `message.id` is a different
-        // identifier (and absent on user messages), so storing it made every lookup miss
-        // and fall through to the last assistant message.
-        String messageId = messageIdOverride != null ? messageIdOverride
-                : (top.has("uuid") ? top.get("uuid").getAsString()
-                : (message.has("id") ? message.get("id").getAsString() : ""));
+        // The webview locates a message by its top-level `uuid` (MessageItem renders it as
+        // data-message-uuid); `message.id` is a different identifier and absent on user
+        // messages, so storing it made every lookup miss and fall back to the last message.
+        //
+        // This line's own uuid is the primary id. The merge run's first uuid is kept as an
+        // alternative, because the webview may render this line's blocks inside the run's
+        // single merged node — the locator tries both, so either grouping works.
+        String ownUuid = top.has("uuid") ? top.get("uuid").getAsString()
+                : (message.has("id") ? message.get("id").getAsString() : "");
+        String altUuid = renderedMessageUuid != null && !renderedMessageUuid.equals(ownUuid)
+                ? renderedMessageUuid : "";
         String ts = top.has("timestamp") ? top.get("timestamp").getAsString() : "";
+        // 会话工作目录（项目归属）：assistant 行顶层必带 cwd
+        String cwd = top.has("cwd") ? top.get("cwd").getAsString() : "";
 
         JsonArray content = contentEl.getAsJsonArray();
         for (JsonElement el : content) {
@@ -106,34 +142,38 @@ public final class EditSnippetExtractor {
                 continue;
             }
             if (TOOL_EDIT.equals(toolName)) {
-                extractEdit(result, provider, sessionId, messageId, filePath, input, ts);
+                extractEdit(result, provider, sessionId, ownUuid, altUuid, cwd, fileContext,
+                        filePath, input, ts);
             } else if (TOOL_WRITE.equals(toolName)) {
-                extractWrite(result, provider, sessionId, messageId, filePath, input, ts);
+                extractWrite(result, provider, sessionId, ownUuid, altUuid, cwd, fileContext,
+                        filePath, input, ts);
             }
         }
         return result;
     }
 
     private static void extractEdit(List<EditSnippet> result, String provider, String sessionId,
-                                    String messageId, String filePath, JsonObject input, String ts) {
+                                    String messageId, String messageIdAlt, String cwd, FileContext ctx,
+                                    String filePath, JsonObject input, String ts) {
         String newString = input.has("new_string") ? input.get("new_string").getAsString() : "";
         String oldString = input.has("old_string") ? input.get("old_string").getAsString() : "";
         if (!newString.isEmpty()) {
-            result.add(new EditSnippet(provider, sessionId, messageId, filePath,
-                    EditSnippetType.NEW_STRING, truncate(newString), ts));
+            result.add(new EditSnippet(provider, sessionId, messageId, messageIdAlt, cwd, ctx,
+                    filePath, EditSnippetType.NEW_STRING, truncate(newString), ts));
         }
         if (!oldString.isEmpty()) {
-            result.add(new EditSnippet(provider, sessionId, messageId, filePath,
-                    EditSnippetType.OLD_STRING, truncate(oldString), ts));
+            result.add(new EditSnippet(provider, sessionId, messageId, messageIdAlt, cwd, ctx,
+                    filePath, EditSnippetType.OLD_STRING, truncate(oldString), ts));
         }
     }
 
     private static void extractWrite(List<EditSnippet> result, String provider, String sessionId,
-                                     String messageId, String filePath, JsonObject input, String ts) {
+                                     String messageId, String messageIdAlt, String cwd, FileContext ctx,
+                                     String filePath, JsonObject input, String ts) {
         String content = input.has("content") ? input.get("content").getAsString() : "";
         if (!content.isEmpty()) {
-            result.add(new EditSnippet(provider, sessionId, messageId, filePath,
-                    EditSnippetType.WRITE_CONTENT, truncate(content), ts));
+            result.add(new EditSnippet(provider, sessionId, messageId, messageIdAlt, cwd, ctx,
+                    filePath, EditSnippetType.WRITE_CONTENT, truncate(content), ts));
         }
     }
 

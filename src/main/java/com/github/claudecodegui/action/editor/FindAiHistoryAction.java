@@ -9,7 +9,6 @@ import com.github.claudecodegui.util.codeindex.SnippetSearchService;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
@@ -22,12 +21,15 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.popup.JBPopup;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.HyperlinkLabel;
 import com.intellij.ui.components.JBList;
+import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.concurrency.AppExecutorUtil;
 import com.intellij.util.ui.UIUtil;
 import org.jetbrains.annotations.NotNull;
 
 import javax.swing.BorderFactory;
+import javax.swing.DefaultListModel;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -45,12 +47,16 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * 右键「查找 AI 修改历史」：选中代码，搜索历史会话中 Edit/Write 写过或改过这段代码的会话。
- * 搜索结果在【IDE 光标处】弹原生列表（ListPopup），用户选择后在新标签页打开该历史会话，
- * 并定位到命中消息（滚动 + 高亮）。
+ * 默认只搜【当前项目】；弹窗顶部可「选择项目…」勾选其他有 AI 历史的项目后重新搜索。
+ * 选中结果后在新标签页打开该历史会话并定位到命中消息；其他项目的会话以只读方式打开。
  *
  * @author luliang
  */
@@ -91,42 +97,82 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
         }
         VirtualFile vf = e.getData(CommonDataKeys.VIRTUAL_FILE);
         String filePath = vf != null ? vf.getPath() : null;
+        String basePath = project.getBasePath();
 
         // 触发后台增量构建（幂等，构建中并发合并）
         SnippetIndexHolder.ensureIndexBuilt();
 
+        // 默认搜索范围：当前项目（流程零额外操作）
+        List<String> scope = basePath != null
+                ? new ArrayList<>(Collections.singletonList(basePath)) : new ArrayList<>();
+        // 即使当前项目无命中也弹窗：空列表 + 顶部「选择项目…」让用户能改范围重搜
+        runSearch(project, selectedText, filePath, scope, hits ->
+                ApplicationManager.getApplication().invokeLater(() ->
+                        showHitListPopup(project, editor, selectedText, filePath, basePath, scope, hits)));
+    }
+
+    /** 后台搜索，完成后回调（回调内自行切 EDT）。 */
+    private void runSearch(Project project, String selectedText, String filePath, List<String> scope,
+                           Consumer<List<JsonObject>> onDone) {
         AppExecutorUtil.getAppExecutorService().execute(() -> {
             try {
                 EditSnippetIndexer indexer = SnippetIndexHolder.get();
                 SnippetSearchService service = new SnippetSearchService(indexer);
-                JsonArray results = service.searchAsJson(selectedText, filePath);
+                JsonArray results = service.searchAsJson(selectedText, filePath, scope);
                 List<JsonObject> hits = new ArrayList<>();
                 for (JsonElement el : results) {
                     if (el.isJsonObject()) {
                         hits.add(el.getAsJsonObject());
                     }
                 }
-                LOG.info("[FindAiHistory] 命中 " + hits.size() + " 条");
-                ApplicationManager.getApplication().invokeLater(() -> showHitListPopup(project, editor, hits));
+                LOG.info("[FindAiHistory] 命中 " + hits.size() + " 条，范围 " + scope);
+                onDone.accept(hits);
             } catch (Exception ex) {
                 LOG.error("[FindAiHistory] 搜索失败", ex);
                 String msg = ex.getMessage() != null ? ex.getMessage() : "未知错误";
-                ApplicationManager.getApplication().invokeLater(() -> showError(project, msg));
+                showError(project, msg);
             }
         });
     }
 
-    /** 在编辑器光标附近弹出命中列表；单击选中高亮，双击或回车确认并在新标签页载入会话。 */
-    private void showHitListPopup(Project project, Editor editor, List<JsonObject> hits) {
-        if (hits.isEmpty()) {
-            showInfo(project, ClaudeCodeGuiBundle.message("action.findAiHistory.noResult"));
-            return;
-        }
-        JBList<JsonObject> list = new JBList<>(hits);
+    /** 弹出「范围条 + 命中列表」；范围可改，列表随重搜原地刷新。 */
+    private void showHitListPopup(Project project, Editor editor, String selectedText, String filePath,
+                                  String basePath, List<String> initialScope, List<JsonObject> initialHits) {
+        DefaultListModel<JsonObject> model = new DefaultListModel<>();
+        initialHits.forEach(model::addElement);
+        // 注：初始可能为空，弹窗仍展示范围条，用户可「选择项目…」重新搜索
+
+        JBList<JsonObject> list = new JBList<>(model);
         list.setCellRenderer(new SnippetCellRenderer());
         list.setFixedCellHeight(ROW_HEIGHT);
         list.setVisibleRowCount(MAX_VISIBLE_ROWS);
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        list.getEmptyText().setText(ClaudeCodeGuiBundle.message("action.findAiHistory.noResult"));
+
+        // 当前结果窗的搜索范围（改范围会整体重开一个新窗，不在此原地变更）
+        List<String> scope = new ArrayList<>(initialScope);
+
+        JLabel scopeLabel = new JLabel(buildScopeText(basePath, scope));
+
+        HyperlinkLabel chooseLink = new HyperlinkLabel(
+                ClaudeCodeGuiBundle.message("action.findAiHistory.chooseProjects.link"));
+        // 模态多选框会抢走焦点、导致当前 JBPopup 自动关闭，因此无法原地刷新旧列表。
+        // 改为：选完项目（或取消）后用对应范围重新搜索并弹出一个全新的结果窗。
+        chooseLink.addHyperlinkListener(e ->
+                chooseProjects(project, basePath, new ArrayList<>(scope), selectedRoots ->
+                        reopenWithScope(project, editor, selectedText, filePath, basePath, selectedRoots)));
+
+        JPanel scopeBar = new JPanel(new BorderLayout(8, 0));
+        scopeBar.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
+        scopeBar.add(scopeLabel, BorderLayout.CENTER);
+        scopeBar.add(chooseLink, BorderLayout.EAST);
+
+        JBScrollPane scrollPane = new JBScrollPane(list);
+        scrollPane.setPreferredSize(new Dimension(620, Math.min(MAX_VISIBLE_ROWS * ROW_HEIGHT + 8, 448)));
+
+        JPanel content = new JPanel(new BorderLayout());
+        content.add(scopeBar, BorderLayout.NORTH);
+        content.add(scrollPane, BorderLayout.CENTER);
 
         final JBPopup[] popupHolder = new JBPopup[1];
         Runnable choose = () -> {
@@ -136,7 +182,7 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
                 if (p != null && p.isVisible()) {
                     p.cancel();
                 }
-                openHistoryInNewTab(project, hit);
+                openHistoryInNewTab(project, hit, basePath);
             }
         };
         // 双击确认
@@ -153,13 +199,80 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
                 KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), JComponent.WHEN_FOCUSED);
 
         JBPopup popup = JBPopupFactory.getInstance()
-                .createComponentPopupBuilder(list, list)
+                .createComponentPopupBuilder(content, list)
                 .setTitle(ClaudeCodeGuiBundle.message("action.findAiHistory.text"))
                 .setRequestFocus(true)
                 .setFocusable(true)
                 .createPopup();
         popupHolder[0] = popup;
         popup.showInBestPositionFor(editor);
+    }
+
+    /** 用新项目范围重新后台搜索，完成后弹一个全新的结果窗。 */
+    private void reopenWithScope(Project project, Editor editor, String selectedText, String filePath,
+                                 String basePath, List<String> scope) {
+        runSearch(project, selectedText, filePath, scope, hits ->
+                ApplicationManager.getApplication().invokeLater(() ->
+                        showHitListPopup(project, editor, selectedText, filePath, basePath, scope, hits)));
+    }
+
+    /** 范围条文案：仅当前项目时显示「当前项目」，否则显示项目数量。 */
+    private static String buildScopeText(String basePath, List<String> scope) {
+        String prefix = ClaudeCodeGuiBundle.message("action.findAiHistory.scope.label");
+        if (scope.size() == 1 && basePath != null
+                && ProjectPickerDialog.normalizeKey(scope.get(0))
+                        .equals(ProjectPickerDialog.normalizeKey(basePath))) {
+            return prefix + " " + ClaudeCodeGuiBundle.message("action.findAiHistory.scope.current");
+        }
+        return prefix + " " + ClaudeCodeGuiBundle.message(
+                "action.findAiHistory.scope.multi", String.valueOf(scope.size()));
+    }
+
+    /** 后台取可选项目根（确保含当前项目），EDT 弹多选框，确定后回调所选根。 */
+    private void chooseProjects(Project project, String basePath, List<String> currentScope,
+                                Consumer<List<String>> onSelected) {
+        AppExecutorUtil.getAppExecutorService().execute(() -> {
+            List<String> all;
+            try {
+                all = new ArrayList<>(new SnippetSearchService(SnippetIndexHolder.get()).listProjectRoots());
+            } catch (Exception ex) {
+                LOG.warn("[FindAiHistory] 读取项目列表失败", ex);
+                all = new ArrayList<>();
+            }
+            if (basePath != null) {
+                String baseKey = ProjectPickerDialog.normalizeKey(basePath);
+                boolean present = all.stream()
+                        .anyMatch(p -> ProjectPickerDialog.normalizeKey(p).equals(baseKey));
+                if (!present) {
+                    all.add(0, basePath);
+                }
+            }
+            Set<String> selectedKeys = new HashSet<>();
+            for (String root : currentScope) {
+                selectedKeys.add(ProjectPickerDialog.normalizeKey(root));
+            }
+            final List<String> allRoots = all;
+            final List<String> previousScope = new ArrayList<>(currentScope);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                ProjectPickerDialog dialog = new ProjectPickerDialog(project, allRoots, selectedKeys);
+                if (dialog.showAndGet()) {
+                    onSelected.accept(dialog.getSelectedProjects());
+                } else {
+                    // 取消：结果窗已因失焦关闭，按原范围重开一个，避免界面无反馈
+                    onSelected.accept(previousScope);
+                }
+            });
+        });
+    }
+
+    /** 会话 cwd 是否位于当前项目根内（根或其子目录）。 */
+    private static boolean isWithinProject(String cwd, String basePath) {
+        if (cwd == null || cwd.isEmpty() || basePath == null) {
+            return false;
+        }
+        String cwdKey = ProjectPickerDialog.normalizeKey(cwd);
+        String baseKey = ProjectPickerDialog.normalizeKey(basePath);
+        return cwdKey.equals(baseKey) || cwdKey.startsWith(baseKey + "/");
     }
 
     /** Popup row, line 1: file name and matched line range. The "current file" case is
@@ -239,11 +352,24 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
         }
     }
 
-    /** 在新标签页载入命中的历史会话，前端定位到命中消息。 */
-    private void openHistoryInNewTab(Project project, JsonObject hit) {
+    /** 在新标签页载入命中的历史会话，前端定位到命中消息；其他项目的会话标记只读。 */
+    private void openHistoryInNewTab(Project project, JsonObject hit, String basePath) {
         String sessionId = hit.has("sessionId") ? hit.get("sessionId").getAsString() : "";
         String provider = hit.has("provider") ? hit.get("provider").getAsString() : "claude";
         String messageId = hit.has("messageId") ? hit.get("messageId").getAsString() : "";
+        String messageIdAlt = hit.has("messageIdAlt") ? hit.get("messageIdAlt").getAsString() : "";
+        String matchText = hit.has("matchText") ? hit.get("matchText").getAsString() : "";
+        String cwd = hit.has("cwd") && !hit.get("cwd").isJsonNull() ? hit.get("cwd").getAsString() : "";
+        String projectDir = hit.has("projectDir") ? hit.get("projectDir").getAsString() : "";
+        String projectRoot = hit.has("projectRoot") ? hit.get("projectRoot").getAsString() : "";
+        boolean readOnly = cwd != null && !cwd.isEmpty() && !isWithinProject(cwd, basePath);
+        // Always load through the SESSION's own directory, never through the message's cwd
+        // (often a subdirectory such as …\question-service, which resolves to a directory
+        // that does not exist and yields an empty session) nor through the current
+        // project's working directory. projectRoot is a real path resolving to that
+        // directory, so the file is found and the session keeps a usable working
+        // directory; the encoded directory name is only a fallback.
+        String loadCwd = !projectRoot.isEmpty() ? projectRoot : projectDir;
         if (sessionId.isEmpty()) {
             return;
         }
@@ -275,6 +401,21 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
                 if (!messageId.isEmpty()) {
                     payload.addProperty("messageId", messageId);
                 }
+                if (!messageIdAlt.isEmpty()) {
+                    // The webview tries both ids, so it locates the message whichever
+                    // node the merge actually produced.
+                    payload.addProperty("messageIdAlt", messageIdAlt);
+                }
+                if (!matchText.isEmpty()) {
+                    // Lets the webview scroll to and highlight the exact edited line
+                    // inside what may be a very long merged message.
+                    payload.addProperty("matchText", matchText);
+                }
+                // 告知前端是否进入只读态（跨项目会话不允许发消息）
+                payload.addProperty("readOnly", readOnly);
+                if (!loadCwd.isEmpty()) {
+                    payload.addProperty("cwd", loadCwd);
+                }
                 // 自轮询脚本：等 window.openHistorySession 注册后调用（前端 React 可能尚未挂载）
                 String payloadJson = payload.toString();
                 String jsCode = "(function(){var p=" + payloadJson + ";var n=0;"
@@ -282,7 +423,10 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
                         + "if(++n<=50){setTimeout(w,300);}})();})();";
                 ApplicationManager.getApplication().invokeLater(() ->
                         newWindow.executeJavaScriptCode(jsCode));
-                LOG.info("[FindAiHistory] 已在新 tab 触发载入会话: " + sessionId);
+                LOG.info("[FindAiHistory] 已在新 tab 触发载入会话: " + sessionId
+                        + ", messageId=" + messageId
+                        + ", cwd=" + cwd
+                        + (readOnly ? "（只读/其他项目）" : ""));
             });
         });
     }

@@ -1,5 +1,6 @@
 package com.github.claudecodegui.util.codeindex;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -28,6 +29,7 @@ public class ClaudeSnippetIndexBuilder {
 
     private static final Logger LOG = Logger.getInstance(ClaudeSnippetIndexBuilder.class);
     private static final String PROVIDER = "claude";
+    private static final String TOOL_RESULT = "tool_result";
 
     private final EditSnippetIndexer indexer;
 
@@ -66,26 +68,35 @@ public class ClaudeSnippetIndexBuilder {
                 return 0;
             }
             int count = 0;
-            // Claude writes one API message across consecutive jsonl lines that share
-            // `message.id` but carry distinct `uuid`s, while the webview renders the group as
-            // a single node exposing the first uuid. Track that uuid per group so every line
-            // is indexed under the id the DOM actually carries.
-            String currentGroupId = null;
-            String currentGroupFirstUuid = null;
+            // The directory the session file lives in (Claude's project key). Needed to
+            // reopen the session: a message's own cwd can be a SUBDIRECTORY of that
+            // project, and resolving the file from a subdirectory finds nothing.
+            Path parent = file.getParent();
+            String projectDir = parent != null && parent.getFileName() != null
+                    ? parent.getFileName().toString() : null;
+            EditSnippetExtractor.FileContext fileContext =
+                    new EditSnippetExtractor.FileContext(projectDir, findProjectRootCwd(file, projectDir));
+            // The webview merges consecutive assistant messages into ONE rendered node that
+            // keeps the first message's uuid, so every snippet in a merge run must be indexed
+            // under that run's first uuid. Track it here, mirroring the webview's grouping:
+            // tool_result carriers and non-rendered lines keep a run alive, a real user
+            // prompt ends it.
+            String runFirstUuid = null;
             try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    String lineGroupId = assistantMessageId(line);
-                    if (lineGroupId == null) {
-                        currentGroupId = null;
-                        currentGroupFirstUuid = null;
-                    } else if (!lineGroupId.equals(currentGroupId)) {
-                        currentGroupId = lineGroupId;
-                        currentGroupFirstUuid = topLevelUuid(line);
+                    LineKind kind = classify(line);
+                    if (kind == LineKind.ASSISTANT) {
+                        if (runFirstUuid == null) {
+                            runFirstUuid = topLevelUuid(line);
+                        }
+                    } else if (kind == LineKind.USER_PROMPT) {
+                        runFirstUuid = null;
                     }
+                    // TRANSPARENT lines neither start nor end a run.
 
                     List<EditSnippet> snippets =
-                            EditSnippetExtractor.extractLine(line, PROVIDER, currentGroupFirstUuid);
+                            EditSnippetExtractor.extractLine(line, PROVIDER, runFirstUuid, fileContext);
                     if (!snippets.isEmpty()) {
                         indexer.insertAll(snippets);
                         count += snippets.size();
@@ -100,31 +111,125 @@ public class ClaudeSnippetIndexBuilder {
         }
     }
 
-    /** `message.id` of an assistant line, or null when the line is anything else. */
-    private static String assistantMessageId(String jsonlLine) {
+    /**
+     * A real path that resolves to {@code projectDir}: the first cwd in the transcript
+     * whose Claude project key equals that directory, e.g. the project root
+     * {@code E:\projects2023\questionV2} for {@code E--projects2023-questionV2}.
+     *
+     * <p>Reopening the session with this path both finds the file and keeps a working
+     * directory the CLI can actually use; falling back to the directory name would
+     * resolve the same file but as a nonsense working directory.
+     *
+     * @return the path, or null when the transcript contains no such cwd
+     */
+    private static String findProjectRootCwd(Path file, String projectDir) {
+        if (projectDir == null) {
+            return null;
+        }
+        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String cwd = stringField(parse(line), "cwd");
+                if (cwd != null && projectKey(cwd).equals(projectDir)) {
+                    return cwd;
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("[EditSnippet] Failed to scan project root for: " + file, e);
+        }
+        return null;
+    }
+
+    /** Claude's project key for a path: every non-alphanumeric character becomes '-'. */
+    private static String projectKey(String path) {
+        return path.replaceAll("[^a-zA-Z0-9]", "-");
+    }
+
+    /** How a jsonl line participates in the webview's assistant-merge grouping. */
+    private enum LineKind {
+        /** Rendered assistant line: starts or continues a merge run. */
+        ASSISTANT,
+        /** Rendered user prompt: ends the run. */
+        USER_PROMPT,
+        /** Does not render (or is a tool_result carrier): transparent to the grouping. */
+        TRANSPARENT
+    }
+
+    private static LineKind classify(String jsonlLine) {
+        JsonObject top = parse(jsonlLine);
+        if (top == null) {
+            return LineKind.TRANSPARENT;
+        }
+        // Filtered out before merging, so they cannot break a run.
+        if (isTrue(top, "isMeta") || isTrue(top, "isSidechain")) {
+            return LineKind.TRANSPARENT;
+        }
+        String type = stringField(top, "type");
+        if ("assistant".equals(type)) {
+            return LineKind.ASSISTANT;
+        }
+        if (!"user".equals(type)) {
+            return LineKind.TRANSPARENT;
+        }
+        return isToolResultOnlyUser(top) ? LineKind.TRANSPARENT : LineKind.USER_PROMPT;
+    }
+
+    /** True when the user line carries nothing but tool_result blocks. */
+    private static boolean isToolResultOnlyUser(JsonObject top) {
+        JsonObject message = objectField(top, "message");
+        if (message == null) {
+            return false;
+        }
+        JsonElement contentEl = message.get("content");
+        if (contentEl == null || !contentEl.isJsonArray()) {
+            return false;
+        }
+        JsonArray blocks = contentEl.getAsJsonArray();
+        if (blocks.isEmpty()) {
+            return false;
+        }
+        for (JsonElement el : blocks) {
+            if (!el.isJsonObject()) {
+                return false;
+            }
+            if (!TOOL_RESULT.equals(stringField(el.getAsJsonObject(), "type"))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Top-level {@code uuid} of a line, or null when absent or unparseable. */
+    private static String topLevelUuid(String jsonlLine) {
+        JsonObject top = parse(jsonlLine);
+        return top == null ? null : stringField(top, "uuid");
+    }
+
+    private static JsonObject parse(String jsonlLine) {
+        if (jsonlLine == null || jsonlLine.trim().isEmpty()) {
+            return null;
+        }
         try {
-            JsonObject top = JsonParser.parseString(jsonlLine).getAsJsonObject();
-            if (!top.has("type") || !"assistant".equals(top.get("type").getAsString())) {
-                return null;
-            }
-            JsonElement messageEl = top.get("message");
-            if (messageEl == null || !messageEl.isJsonObject()) {
-                return null;
-            }
-            JsonObject message = messageEl.getAsJsonObject();
-            return message.has("id") ? message.get("id").getAsString() : null;
+            return JsonParser.parseString(jsonlLine).getAsJsonObject();
         } catch (RuntimeException e) {
+            // 无效 JSON 行直接忽略，不中断整个文件的扫描
             return null;
         }
     }
 
-    /** Top-level `uuid` of a line, or null when absent or unparseable. */
-    private static String topLevelUuid(String jsonlLine) {
-        try {
-            JsonObject top = JsonParser.parseString(jsonlLine).getAsJsonObject();
-            return top.has("uuid") ? top.get("uuid").getAsString() : null;
-        } catch (RuntimeException e) {
-            return null;
-        }
+    private static JsonObject objectField(JsonObject parent, String name) {
+        JsonElement el = parent.get(name);
+        return el != null && el.isJsonObject() ? el.getAsJsonObject() : null;
+    }
+
+    private static String stringField(JsonObject parent, String name) {
+        JsonElement el = parent.get(name);
+        return el != null && el.isJsonPrimitive() ? el.getAsString() : null;
+    }
+
+    private static boolean isTrue(JsonObject parent, String name) {
+        JsonElement el = parent.get(name);
+        return el != null && el.isJsonPrimitive() && el.getAsJsonPrimitive().isBoolean()
+                && el.getAsBoolean();
     }
 }
