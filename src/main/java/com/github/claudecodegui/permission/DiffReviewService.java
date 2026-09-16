@@ -7,6 +7,7 @@ import com.github.claudecodegui.handler.diff.InteractiveDiffRequest;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.roots.ProjectRootManager;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
@@ -20,8 +21,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 /**
  * Service for reviewing file-modifying tool calls (Edit, Write) via an interactive diff view.
@@ -66,9 +69,10 @@ public class DiffReviewService {
             return null;
         }
 
-        // Security: validate file path is within project directory
-        String projectBasePath = project.getBasePath();
-        if (projectBasePath != null && !WslPathUtil.isPathWithinDirectory(filePath, projectBasePath)) {
+        // Security: validate file path is within project directory.
+        // In an IntelliJ Workspace (multi-project) setup, getBasePath() is the workspace root
+        // while the sources live under the content roots of the linked projects — check both.
+        if (!isPathWithinProject(project, filePath)) {
             LOG.warn("DiffReview: Security - file path outside project: " + filePath);
             return null;
         }
@@ -119,6 +123,35 @@ public class DiffReviewService {
             LOG.error("DiffReview: Failed to set up diff review for " + filePath, e);
             return null;
         }
+    }
+
+    /**
+     * Check whether the file path belongs to the project.
+     *
+     * <p>Checks the project base path first, then falls back to the project's content roots.
+     * The latter is required for IntelliJ Workspace (multi-project) setups, where
+     * {@link Project#getBasePath()} returns the workspace directory rather than the directory
+     * holding the sources of the linked projects.
+     */
+    private static boolean isPathWithinProject(@NotNull Project project, @NotNull String filePath) {
+        String basePath = project.getBasePath();
+        if (basePath != null && WslPathUtil.isPathWithinDirectory(filePath, basePath)) {
+            return true;
+        }
+
+        VirtualFile[] contentRoots = ProjectRootManager.getInstance(project).getContentRoots();
+        for (VirtualFile contentRoot : contentRoots) {
+            if (WslPathUtil.isPathWithinDirectory(filePath, contentRoot.getPath())) {
+                return true;
+            }
+        }
+
+        LOG.info("DiffReview: Path outside project. basePath=" + basePath
+                + ", contentRoots=" + Arrays.stream(contentRoots)
+                        .map(VirtualFile::getPath)
+                        .collect(Collectors.joining(", ")));
+
+        return false;
     }
 
     /**
