@@ -6,16 +6,12 @@
  */
 
 /**
- * Find the node to focus inside the messages container.
+ * Exact match only: `data-message-uuid` first, then `data-message-id`.
  *
- * Match priority:
- *   1. `data-message-uuid` — the index stores the jsonl `message.id`, and either
- *      identifier may end up on the node depending on the payload shape.
- *   2. `data-message-id`
- *   3. Fallback: the last assistant message, so an id mismatch still scrolls the
- *      user somewhere near the edit instead of silently doing nothing.
+ * Returns null when nothing matches, which is the signal that the caller should
+ * try revealing collapsed history before falling back.
  */
-export function findFocusTarget(
+export function findExactTarget(
   container: HTMLElement,
   targetId: string,
 ): HTMLElement | null {
@@ -35,17 +31,38 @@ export function findFocusTarget(
     }
   }
 
-  const assistantNodes = container.querySelectorAll<HTMLElement>('.message.assistant');
-  if (assistantNodes.length > 0) {
-    return assistantNodes[assistantNodes.length - 1];
-  }
-
   return null;
 }
 
 /**
+ * Last-resort fallback: the final assistant message, so an id that matches
+ * nothing still scrolls the user somewhere near the edit instead of doing
+ * nothing at all.
+ */
+export function findFallbackTarget(container: HTMLElement): HTMLElement | null {
+  const assistantNodes = container.querySelectorAll<HTMLElement>('.message.assistant');
+  if (assistantNodes.length > 0) {
+    return assistantNodes[assistantNodes.length - 1];
+  }
+  return null;
+}
+
+/**
+ * Exact match, then the fallback. Kept for simple callers and tests; the focus
+ * effect uses the two halves separately so it can reveal collapsed history
+ * before giving up.
+ */
+export function findFocusTarget(
+  container: HTMLElement,
+  targetId: string,
+): HTMLElement | null {
+  return findExactTarget(container, targetId) ?? findFallbackTarget(container);
+}
+
+/**
  * Collect the ids actually present in the container, for diagnostics when focus
- * fails — this is what distinguishes "id mismatch" from "node never rendered".
+ * fails — this is what distinguishes "id mismatch" from "node never rendered"
+ * (e.g. the message is still behind the collapsed-history indicator).
  */
 export function collectMessageIds(container: HTMLElement, limit = 20): string[] {
   const nodes = container.querySelectorAll<HTMLElement>(

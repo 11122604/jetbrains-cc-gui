@@ -48,13 +48,15 @@ import { useUIState } from './contexts/UIStateContext';
 import { useDialogs } from './contexts/DialogContext';
 import { AppDialogs } from './components/AppDialogs';
 import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from './utils/permissionDialogTimeout';
-import { collectMessageIds, findFocusTarget } from './utils/messageFocus';
+import { collectMessageIds, findExactTarget, findFallbackTarget } from './utils/messageFocus';
 
 // --- G0: Find AI Edit History — locating the focused message ---
 // Poll instead of a single delay: on a large conversation the updateMessages push
 // and the resulting DOM render can take longer than any fixed delay.
 const FOCUS_POLL_INTERVAL_MS = 200;
 const FOCUS_MAX_ATTEMPTS = 30;
+/** Attempts to wait before revealing collapsed history and retrying. */
+const FOCUS_REVEAL_AFTER_ATTEMPTS = 3;
 /** How long the located message stays highlighted. */
 const FOCUS_HIGHLIGHT_MS = 10_000;
 
@@ -571,41 +573,63 @@ const App = () => {
   }, [loadHistorySession]);
 
   // Locate the hit message once the session has loaded (scroll + highlight).
-  // Polls rather than firing a single delayed lookup, and falls back to the last
-  // assistant message when the id matches no rendered node.
+  //
+  // Exact match first. A long session is rendered collapsed behind the "show
+  // earlier turns" indicator, so the target node may not be in the DOM at all;
+  // in that case reveal the collapsed turns and retry. Only after every attempt
+  // fails do we fall back to the last assistant message, so that the fallback
+  // can never mask a target that merely needed the history expanded.
   useEffect(() => {
     const targetId = pendingFocusMessageIdRef.current;
     if (!targetId) return;
 
     let attempts = 0;
-    const timer = window.setInterval(() => {
+    let revealTried = false;
+    let timer = 0;
+
+    const focus = (node: HTMLElement) => {
+      window.clearInterval(timer);
+      node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      node.classList.add('ai-focus-highlight');
+      window.setTimeout(
+        () => node.classList.remove('ai-focus-highlight'),
+        FOCUS_HIGHLIGHT_MS,
+      );
+      pendingFocusMessageIdRef.current = null;
+    };
+
+    timer = window.setInterval(() => {
       attempts++;
       const container = messagesContainerRef.current;
-      const node = container ? findFocusTarget(container, targetId) : null;
 
-      if (node) {
-        window.clearInterval(timer);
-        node.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        node.classList.add('ai-focus-highlight');
-        window.setTimeout(
-          () => node.classList.remove('ai-focus-highlight'),
-          FOCUS_HIGHLIGHT_MS,
-        );
-        pendingFocusMessageIdRef.current = null;
+      const exact = container ? findExactTarget(container, targetId) : null;
+      if (exact) {
+        focus(exact);
         return;
+      }
+
+      // The target is probably still hidden behind the collapsed-history
+      // indicator — expand once, then restart the attempt budget.
+      if (!revealTried && attempts >= FOCUS_REVEAL_AFTER_ATTEMPTS) {
+        revealTried = true;
+        const revealed = messageListRef.current?.revealAll() ?? 0;
+        if (revealed > 0) {
+          attempts = 0;
+          return;
+        }
       }
 
       if (attempts >= FOCUS_MAX_ATTEMPTS) {
         window.clearInterval(timer);
+        const fallback = container ? findFallbackTarget(container) : null;
+        if (fallback) {
+          focus(fallback);
+        }
         // Diagnostics: comparing the wanted id against the ids actually rendered
-        // separates "id mismatch" from "the node never rendered at all".
+        // separates "id mismatch" from "node never rendered at all".
         console.warn(
           '[FindAiHistory] focus target not found. target=' + targetId
-          + ' domIds=' + JSON.stringify(
-            messagesContainerRef.current
-              ? collectMessageIds(messagesContainerRef.current)
-              : [],
-          ),
+          + ' domIds=' + JSON.stringify(container ? collectMessageIds(container) : []),
         );
       }
     }, FOCUS_POLL_INTERVAL_MS);
