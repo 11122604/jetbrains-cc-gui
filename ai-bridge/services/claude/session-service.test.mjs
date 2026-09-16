@@ -3,8 +3,61 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { buildSessionMessagesPayload, isUserTextMessage, isInterruptionMarker } from './session-service.js';
+
+
+test('persistJsonlMessage and loadSessionHistory keep using a legacy symlink-keyed session', () => {
+  const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-legacy-real-'));
+  const linkDir = `${realDir}-link`;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-legacy-home-'));
+  try {
+    try {
+      fs.symlinkSync(realDir, linkDir, 'dir');
+    } catch {
+      return;
+    }
+
+    const pathUtilsUrl = new URL('../../utils/path-utils.js', import.meta.url).href;
+    const sessionServiceUrl = new URL('./session-service.js', import.meta.url).href;
+    const script = `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const { getClaudeProjectSessionFileCandidates } = await import(${JSON.stringify(pathUtilsUrl)});
+      const { persistJsonlMessage, loadSessionHistory } = await import(${JSON.stringify(sessionServiceUrl)});
+      const sessionId = 'legacy-session';
+      const cwd = ${JSON.stringify(linkDir)};
+      const candidates = getClaudeProjectSessionFileCandidates(sessionId, cwd);
+      assert.equal(candidates.length, 2);
+      fs.mkdirSync(path.dirname(candidates[1]), { recursive: true });
+      fs.writeFileSync(candidates[1], [
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'old prompt' } }),
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'old answer' } }),
+      ].join('\\n') + '\\n');
+      persistJsonlMessage(sessionId, cwd, {
+        type: 'user',
+        message: { content: 'new prompt' },
+      });
+      assert.equal(fs.existsSync(candidates[0]), false);
+      assert.deepEqual(
+        loadSessionHistory(sessionId, cwd).map((message) => message.content),
+        ['old prompt', 'old answer'],
+      );
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: process.cwd(),
+      env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+  } finally {
+    fs.rmSync(linkDir, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+    fs.rmSync(realDir, { recursive: true, force: true });
+  }
+});
 
 test('buildSessionMessagesPayload returns an empty history when the session file is missing', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-claude-session-'));
