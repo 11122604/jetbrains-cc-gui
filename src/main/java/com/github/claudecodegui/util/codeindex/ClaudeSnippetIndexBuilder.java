@@ -1,5 +1,8 @@
 package com.github.claudecodegui.util.codeindex;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.intellij.openapi.diagnostic.Logger;
 import com.github.claudecodegui.bridge.NodeDetector;
 
@@ -63,10 +66,26 @@ public class ClaudeSnippetIndexBuilder {
                 return 0;
             }
             int count = 0;
+            // Claude writes one API message across consecutive jsonl lines that share
+            // `message.id` but carry distinct `uuid`s, while the webview renders the group as
+            // a single node exposing the first uuid. Track that uuid per group so every line
+            // is indexed under the id the DOM actually carries.
+            String currentGroupId = null;
+            String currentGroupFirstUuid = null;
             try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    List<EditSnippet> snippets = EditSnippetExtractor.extractLine(line, PROVIDER);
+                    String lineGroupId = assistantMessageId(line);
+                    if (lineGroupId == null) {
+                        currentGroupId = null;
+                        currentGroupFirstUuid = null;
+                    } else if (!lineGroupId.equals(currentGroupId)) {
+                        currentGroupId = lineGroupId;
+                        currentGroupFirstUuid = topLevelUuid(line);
+                    }
+
+                    List<EditSnippet> snippets =
+                            EditSnippetExtractor.extractLine(line, PROVIDER, currentGroupFirstUuid);
                     if (!snippets.isEmpty()) {
                         indexer.insertAll(snippets);
                         count += snippets.size();
@@ -78,6 +97,34 @@ public class ClaudeSnippetIndexBuilder {
         } catch (Exception e) {
             LOG.warn("[EditSnippet] Failed to index file: " + file, e);
             return 0;
+        }
+    }
+
+    /** `message.id` of an assistant line, or null when the line is anything else. */
+    private static String assistantMessageId(String jsonlLine) {
+        try {
+            JsonObject top = JsonParser.parseString(jsonlLine).getAsJsonObject();
+            if (!top.has("type") || !"assistant".equals(top.get("type").getAsString())) {
+                return null;
+            }
+            JsonElement messageEl = top.get("message");
+            if (messageEl == null || !messageEl.isJsonObject()) {
+                return null;
+            }
+            JsonObject message = messageEl.getAsJsonObject();
+            return message.has("id") ? message.get("id").getAsString() : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Top-level `uuid` of a line, or null when absent or unparseable. */
+    private static String topLevelUuid(String jsonlLine) {
+        try {
+            JsonObject top = JsonParser.parseString(jsonlLine).getAsJsonObject();
+            return top.has("uuid") ? top.get("uuid").getAsString() : null;
+        } catch (RuntimeException e) {
+            return null;
         }
     }
 }

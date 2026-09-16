@@ -37,6 +37,13 @@ public class EditSnippetIndexer implements AutoCloseable {
     /** 单次搜索最多处理的查询行数。 */
     public static final int MAX_QUERY_LINES = 20;
 
+    /**
+     * Index format version. Bump whenever the extraction logic changes the values
+     * stored for a snippet — the per-file mtime+size check cannot detect that, so
+     * without this the index would keep serving rows the webview can never match.
+     */
+    private static final int SCHEMA_VERSION = 3;
+
     private final Connection connection;
 
     public EditSnippetIndexer(Path dbPath) throws SQLException {
@@ -83,6 +90,22 @@ public class EditSnippetIndexer implements AutoCloseable {
                     + "path TEXT PRIMARY KEY,"
                     + "mtime INTEGER,"
                     + "size INTEGER)");
+
+            // The stored ids depend on the extraction logic and the per-file mtime+size
+            // check cannot notice a change there. Drop everything when the format version
+            // moves, so the next build re-indexes from scratch.
+            if (readSchemaVersion(st) != SCHEMA_VERSION) {
+                st.execute("DELETE FROM edit_snippets");
+                st.execute("DELETE FROM indexed_files");
+                st.execute("PRAGMA user_version = " + SCHEMA_VERSION);
+                LOG.info("Edit snippet index format changed; cleared for a full rebuild");
+            }
+        }
+    }
+
+    private static int readSchemaVersion(Statement st) throws SQLException {
+        try (ResultSet rs = st.executeQuery("PRAGMA user_version")) {
+            return rs.next() ? rs.getInt(1) : 0;
         }
     }
 

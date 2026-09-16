@@ -612,8 +612,7 @@ const App = () => {
       // indicator — expand once, then restart the attempt budget.
       if (!revealTried && attempts >= FOCUS_REVEAL_AFTER_ATTEMPTS) {
         revealTried = true;
-        const revealed = messageListRef.current?.revealAll() ?? 0;
-        if (revealed > 0) {
+        if ((messageListRef.current?.revealAll() ?? 0) > 0) {
           attempts = 0;
           return;
         }
@@ -625,8 +624,8 @@ const App = () => {
         if (fallback) {
           focus(fallback);
         }
-        // Diagnostics: comparing the wanted id against the ids actually rendered
-        // separates "id mismatch" from "node never rendered at all".
+        // Comparing the wanted id against the ids actually rendered separates
+        // "id mismatch" from "the node never rendered at all".
         console.warn(
           '[FindAiHistory] focus target not found. target=' + targetId
           + ' domIds=' + JSON.stringify(container ? collectMessageIds(container) : []),

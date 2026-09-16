@@ -37,6 +37,20 @@ public final class EditSnippetExtractor {
      * @param provider  provider 名（如 "claude"）
      */
     public static List<EditSnippet> extractLine(String jsonlLine, String provider) {
+        return extractLine(jsonlLine, provider, null);
+    }
+
+    /**
+     * As {@link #extractLine(String, String)}, but stores {@code messageIdOverride} as the
+     * message id whenever it is non-null.
+     *
+     * <p>Claude writes a single API message across several consecutive jsonl lines that share
+     * {@code message.id} yet carry distinct {@code uuid}s. The webview merges such a group into
+     * one node exposing the <em>first</em> uuid, so every line of the group must be indexed
+     * under that same uuid. Indexing a later line under its own uuid stores an id no DOM node
+     * ever carries, and the focus lookup can never match.
+     */
+    public static List<EditSnippet> extractLine(String jsonlLine, String provider, String messageIdOverride) {
         List<EditSnippet> result = new ArrayList<>();
         if (jsonlLine == null || jsonlLine.trim().isEmpty()) {
             return result;
@@ -62,7 +76,13 @@ public final class EditSnippetExtractor {
         }
 
         String sessionId = top.has("sessionId") ? top.get("sessionId").getAsString() : "";
-        String messageId = message.has("id") ? message.get("id").getAsString() : "";
+        // The identifier the webview can actually locate is the top-level `uuid` — that is
+        // what MessageItem renders as data-message-uuid. `message.id` is a different
+        // identifier (and absent on user messages), so storing it made every lookup miss
+        // and fall through to the last assistant message.
+        String messageId = messageIdOverride != null ? messageIdOverride
+                : (top.has("uuid") ? top.get("uuid").getAsString()
+                : (message.has("id") ? message.get("id").getAsString() : ""));
         String ts = top.has("timestamp") ? top.get("timestamp").getAsString() : "";
 
         JsonArray content = contentEl.getAsJsonArray();
