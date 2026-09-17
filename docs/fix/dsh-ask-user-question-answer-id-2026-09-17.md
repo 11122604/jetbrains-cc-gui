@@ -184,9 +184,48 @@ DSH 的协议契约（`@deepseek-ai/dsh-user-questions`）：
 
 ---
 
-## 九、核心文件
+## 九、同一条链路第三个缺陷：提问控件里「手动输入与选项联动不上」
+
+**症状**：弹窗出现 1/2/3 选项 + 一行「其他」手动输入时，用户反馈「手动输入的没办法联动」——打了字却像没生效。
+
+**复现**（真实渲染 + 点击，记录 `onSubmit` 实际提交内容）：
+
+| 操作 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 点「其他」→ 手输 → 提交 | `{"Q":"我自己的答案"}` | 同（本来就通） |
+| 点「其他」→ 手输 → **再点选项1** → 提交 | `{"Q":"1. 选项一"}`，输入框消失，**文本被静默丢弃** | `{"Q":"1. 选项一"}`，输入框同步清空（所见即所交） |
+| 想「选 1 + 补一句」 | **输入框根本不存在** | 输入框常显，一打字自动选中「其他」 |
+| **无选项的自由问答**（DSH 最常见） | **必须先点「其他」**才出现输入框，不点则提交按钮禁用 | 不渲染「其他」行，输入框常显且自动聚焦 |
+| 多选：选项1 + 手输 | 需先点「其他」 | `["1. 选项一","补充说明"]` |
+
+**根因**（`webview/src/components/AskUserQuestionDialog/`）：
+
+1. `QuestionSection.tsx` 把输入框写成 `{isOtherSelected && …}` —— 只有「其他」被选中才渲染；
+2. `answerState.toggleAnswerSelection` 在单选下是 `clear() + add(label)`：点普通选项会抹掉「其他」标记 → 输入框卸载；
+3. `formatAnswers` 只在「标记还在」时才带上文本 → 文本静默丢失；且没有「打字即选中其他」的联动。
+
+**修复**：输入框常显（无选项的题隐藏「其他」行并自动聚焦）；打字自动置上「其他」标记（单选下按协议替换已选选项，因为该题只能携带一个值）；单选点普通选项时清空输入框，避免留下"看着还在、其实不会提交"的幽灵文本；`formatAnswers` 改为「文本一定随答案走」（单选 custom 覆盖选项、多选 labels + custom）；`canProceed` 只要有文本即可提交；点「其他」行同 tick 聚焦。
+
+**真机验证**（session `session-2754c72b-235a-41c7-b745-6e8157d655f4`，cc-gui 内实际作答；两题批次 + 上一步回退改选）：
+
+```json
+{"answers":[{"id":"back_test_q1","selected":["C. 改后的答案"]},
+            {"id":"back_test_q2","selected":[],"custom":"正常"}]}
+```
+
+回退到上一题把 B 改成 C 后提交的是 **C**（状态未丢）；自由文本以 `custom` 送达（说明手动输入确实随答案提交）。
+
+**测试**：`webview/src/components/AskUserQuestionDialog.otherInput.test.tsx`（10 例）；全量 webview 182 个测试文件 / 1586 tests 全过；`npm test`（含 `tsc` 类型检查）退出码 0。
+
+---
+
+## 十、核心文件
 
 - `ai-bridge/services/dsh/events.js`（`mapQuestionAnswers` 重写 + 两个 bridge 调用点传参；`projectRemoteEventFrame` 带出 `agentId` + `waterfallBelongsToSession`）
 - `ai-bridge/services/dsh/message-service.js`（`$events` 按会话过滤 waterfall；活动时间只计本会话帧）
 - `ai-bridge/services/dsh/events.test.js`（新增 5 个映射用例 + 归属判定用例）
 - `ai-bridge/services/dsh/question-bridge.test.js`（新增集成用例 4 个）
+- `webview/src/components/AskUserQuestionDialog/QuestionSection.tsx`（输入框常显；无选项时免「其他」行 + 自动聚焦）
+- `webview/src/components/AskUserQuestionDialog/useAskUserQuestionState.ts`（打字即选中「其他」；单选点选项清空文本；文本即可提交）
+- `webview/src/components/AskUserQuestionDialog/answerState.ts`（`syncOtherSelection`；`formatAnswers` 文本必随答案）
+- `webview/src/components/AskUserQuestionDialog.otherInput.test.tsx`（新增交互回归用例 10 个）

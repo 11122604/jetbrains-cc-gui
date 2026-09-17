@@ -2,7 +2,7 @@ import { useEffect, useState, type RefObject } from 'react';
 import type { AskUserQuestionRequest, Question } from '../AskUserQuestionDialog';
 import { isEditableEventTarget } from '../../utils/isEditableEventTarget';
 import { OTHER_OPTION_MARKER, MAX_CUSTOM_INPUT_LENGTH } from './constants';
-import { buildInitialAnswerState, formatAnswers, toggleAnswerSelection } from './answerState';
+import { buildInitialAnswerState, formatAnswers, syncOtherSelection, toggleAnswerSelection } from './answerState';
 import { clearDialogDraft, readDialogDraft, writeDialogDraft } from '../../utils/dialogStateStorage';
 
 interface AskUserQuestionDraft {
@@ -127,7 +127,6 @@ export const useAskUserQuestionState = ({
   const isLastQuestion = safeQuestionIndex === normalizedQuestions.length - 1;
   const currentAnswerSet = (currentQuestion && answers[currentQuestion.question]) || new Set<string>();
   const currentCustomInput = (currentQuestion && customInputs[currentQuestion.question]) || '';
-  const isOtherSelected = currentAnswerSet.has(OTHER_OPTION_MARKER);
 
   const handleSubmitFinal = () => {
     if (!markSubmitted() || !request) return;
@@ -139,13 +138,20 @@ export const useAskUserQuestionState = ({
   const handleOptionToggle = (label: string) => {
     if (!currentQuestion) return;
 
-    setAnswers((prev) => toggleAnswerSelection(prev, currentQuestion.question, currentQuestion.multiSelect, label));
+    const questionKey = currentQuestion.question;
+    setAnswers((prev) => toggleAnswerSelection(prev, questionKey, currentQuestion.multiSelect, label));
 
-    // Auto-focus the input field when "Other" option is selected
+    // Single-select questions carry one value: picking a predefined option
+    // retires the typed answer, so the box never keeps text that would be
+    // silently left out of the submission.
+    if (!currentQuestion.multiSelect && label !== OTHER_OPTION_MARKER) {
+      setCustomInputs((prev) => (prev[questionKey] ? { ...prev, [questionKey]: '' } : prev));
+    }
+
+    // Auto-focus the input field when "Other" option is selected. The box is
+    // always mounted now, so it can take focus in the same tick.
     if (label === OTHER_OPTION_MARKER) {
-      setTimeout(() => {
-        customInputRef.current?.focus();
-      }, 0);
+      customInputRef.current?.focus();
     }
   };
 
@@ -154,10 +160,15 @@ export const useAskUserQuestionState = ({
 
     // Limit input length to prevent excessively long input
     const sanitizedValue = value.slice(0, MAX_CUSTOM_INPUT_LENGTH);
+    const questionKey = currentQuestion.question;
     setCustomInputs((prev) => ({
       ...prev,
-      [currentQuestion.question]: sanitizedValue,
+      [questionKey]: sanitizedValue,
     }));
+    // Typing is an answer: attach the "Other" marker so the text is submitted.
+    setAnswers((prev) =>
+      syncOtherSelection(prev, questionKey, currentQuestion.multiSelect, sanitizedValue.trim().length > 0),
+    );
   };
 
   const handleNext = () => {
@@ -176,10 +187,11 @@ export const useAskUserQuestionState = ({
 
   // Check if we can proceed:
   // 1. A regular option (not "Other") is selected
-  // 2. Or "Other" is selected with valid custom input
+  // 2. Or a custom answer has been typed (the box is a valid answer on its own,
+  //    even for a question that offers options)
   const hasRegularSelection = Array.from(currentAnswerSet).some(label => label !== OTHER_OPTION_MARKER);
-  const hasValidCustomInput = isOtherSelected && currentCustomInput.trim().length > 0;
-  const canProceed = hasRegularSelection || hasValidCustomInput;
+  const hasCustomText = currentCustomInput.trim().length > 0;
+  const canProceed = hasRegularSelection || hasCustomText;
 
   return {
     isCollapsed,
