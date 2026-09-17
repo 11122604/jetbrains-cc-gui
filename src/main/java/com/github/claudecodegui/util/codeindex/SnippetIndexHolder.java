@@ -26,9 +26,9 @@ public final class SnippetIndexHolder {
     private static volatile EditSnippetIndexer indexer;
     private static final AtomicBoolean building = new AtomicBoolean(false);
 
-    /** 索引进行中提示的显示时长；完成时会被结果提示覆盖。 */
+    /** How long the "indexing" hint stays up; replaced by the result hint when it finishes. */
     private static final long INDEXING_TTL_MS = 60_000L;
-    /** 完成/失败提示的显示时长，到点由状态栏组件自动恢复常规显示。 */
+    /** How long the completion/failure hint stays up before the widget restores its usual display. */
     private static final long RESULT_TTL_MS = 5_000L;
 
     private SnippetIndexHolder() {
@@ -74,16 +74,17 @@ public final class SnippetIndexHolder {
         }
     }
 
-    /** 索引构建阶段，用于选择状态栏文案。 */
+    /** Build phase, used to pick the status bar wording. */
     private enum IndexPhase {
         STARTED, DONE, FAILED
     }
 
     /**
-     * 把索引状态写到每个已打开项目的状态栏。
+     * Write the index state to the status bar of every open project.
      *
-     * <p>索引期间显示“索引中…”，结束后显示新增条数；两者都带 TTL，由状态栏组件到点
-     * 自动恢复常规显示，因此不会长期占用状态栏，也不改动会话状态字段。
+     * <p>Shows "indexing" while the build runs, then the number of newly indexed snippets;
+     * both carry a TTL so the status bar widget restores its usual display on its own,
+     * and the session status field is never touched.
      */
     private static void publishIndexStatus(IndexPhase phase, int count) {
         ApplicationManager.getApplication().invokeLater(() -> {

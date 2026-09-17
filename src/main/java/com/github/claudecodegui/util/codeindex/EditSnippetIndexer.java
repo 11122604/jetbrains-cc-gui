@@ -248,9 +248,11 @@ public class EditSnippetIndexer implements AutoCloseable {
                         + " WHERE snippet_type IN ('NEW_STRING','WRITE_CONTENT')"
                         + " AND snippet_text LIKE ? ESCAPE '\\'");
         if (!roots.isEmpty()) {
-            // 精确匹配片段自身的项目根（不再用 cwd 前缀，否则会带入路径以所选根开头的兄弟项目）。
-            // 比较前先归一化：IDEA 的 project.getBasePath() 给的是正斜杠，而索引里存的是转录文件
-            // 反解出的反斜杠形式，直接比原值会让默认范围（当前项目）一条都匹配不到。
+            // Match the snippet's own project root (no cwd prefix, which would pull in sibling
+            // projects whose path merely starts with the selected root). Normalize both sides
+            // first: IDEA's project.getBasePath() yields forward slashes while the index stores
+            // the backslash form recovered from transcripts, so a raw comparison makes the
+            // default scope (the current project) match nothing at all.
             sql.append(" AND (");
             for (int i = 0; i < roots.size(); i++) {
                 if (i > 0) {
