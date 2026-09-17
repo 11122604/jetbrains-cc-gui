@@ -248,15 +248,15 @@ public class EditSnippetIndexer implements AutoCloseable {
                         + " WHERE snippet_type IN ('NEW_STRING','WRITE_CONTENT')"
                         + " AND snippet_text LIKE ? ESCAPE '\\'");
         if (!roots.isEmpty()) {
-            // 精确匹配片段自身的项目根。此前用 cwd_key 前缀匹配，会把路径恰好以所选根开头的
-            // 兄弟项目一并带入（D:\projects 命中 D:\projects\turn-right-worker），而项目选择器
-            // 把它们当作彼此独立的项目 —— 结果是选了 A 项目却搜出 B 项目的内容。
+            // 精确匹配片段自身的项目根（不再用 cwd 前缀，否则会带入路径以所选根开头的兄弟项目）。
+            // 比较前先归一化：IDEA 的 project.getBasePath() 给的是正斜杠，而索引里存的是转录文件
+            // 反解出的反斜杠形式，直接比原值会让默认范围（当前项目）一条都匹配不到。
             sql.append(" AND (");
             for (int i = 0; i < roots.size(); i++) {
                 if (i > 0) {
                     sql.append(" OR ");
                 }
-                sql.append("COALESCE(project_root, cwd) = ?");
+                sql.append("LOWER(REPLACE(COALESCE(project_root, cwd), '\\', '/')) = ?");
             }
             sql.append(")");
         }
@@ -268,7 +268,8 @@ public class EditSnippetIndexer implements AutoCloseable {
                 int idx = 1;
                 ps.setString(idx++, pattern);
                 for (String root : roots) {
-                    ps.setString(idx++, root);
+                    // 与 SQL 侧的 LOWER(REPLACE(...)) 对应：大小写与斜杠方向都不敏感
+                    ps.setString(idx++, normalizePath(root));
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
