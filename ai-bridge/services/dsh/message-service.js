@@ -68,8 +68,58 @@ export function splitModelTuple(model) {
 }
 
 /**
- * ensure host (adopt or spawn) → workspace.create → session id (create or
- * reuse). Returns null after emitting the send error when any step fails.
+ * Bind one project directory as a Workspace, then resolve the session inside it.
+ *
+ * @param {object} client - negotiated host client.
+ * @param {string} workCwd - project directory the turn runs in.
+ * @param {string} [incomingSessionId] - thread this send resumes, if any.
+ * @returns {Promise<string>} the session id to prompt.
+ * @throws when the Workspace, or a brand-new session in it, cannot be bound.
+ */
+export async function bindWorkspaceSession(client, workCwd, incomingSessionId) {
+  // Workspace binding — never let the session fall into the host cwd. The host
+  // groups by explicit Workspace ownership only, so a cwd-only creation would be
+  // filed under "Ungrouped" for good. Creating is idempotent per directory.
+  let workspace;
+  try {
+    workspace = await dshSession.createWorkspace(client, workCwd);
+  } catch (error) {
+    throw new Error(`dsh workspace.create failed: ${error.message}`);
+  }
+  let workspaceId;
+  try {
+    workspaceId = dshSession.workspaceIdFromCreate(workspace);
+  } catch (error) {
+    throw new Error(`dsh workspace.create failed: ${error.message}`);
+  }
+
+  // Session identity: DSH returns the real id immediately; never mint a local UUID.
+  const sessionId = dshSession.sessionIdFromThread(incomingSessionId);
+  if (!sessionId) {
+    try {
+      return await dshSession.createSession(client, workspaceId);
+    } catch (error) {
+      throw new Error(`dsh session.create failed: ${error.message}`);
+    }
+  }
+
+  // A resumed thread is re-bound as well: threads created before this binding (or
+  // by another client) are ungrouped, and the host never adopts a session by
+  // directory after startup. The host answers with the live session and attaches
+  // it, so the call is idempotent; a host that refuses it — `session/conflict`,
+  // when the session's recorded cwd differs from the Workspace path — must not
+  // fail the turn, so this leg stays best-effort.
+  try {
+    await dshSession.createSession(client, workspaceId, sessionId);
+  } catch (error) {
+    logDebug(`[dsh] rebind of ${sessionId} skipped: ${error.message}`);
+  }
+  return sessionId;
+}
+
+/**
+ * ensure host (adopt or spawn) → bind Workspace → session id (create or
+ * re-bind). Returns null after emitting the send error when any step fails.
  */
 async function ensureSession(settings, workCwd, incomingSessionId) {
   let hostHandle;
@@ -82,31 +132,12 @@ async function ensureSession(settings, workCwd, incomingSessionId) {
   const { client } = hostHandle;
   logDebug(`host ${hostHandle.origin} (${hostHandle.ownership})`);
 
-  // Workspace binding — never let the session fall into the host cwd.
-  // Modern hosts bind the directory on the session itself, so no workspace is
-  // created there (and none of the user's workspace entries are touched).
-  let workspaceId = '';
   try {
-    const workspace = await dshSession.createWorkspace(client, workCwd);
-    if (workspace) {
-      workspaceId = dshSession.workspaceIdFromCreate(workspace);
-    }
+    return { client, sessionId: await bindWorkspaceSession(client, workCwd, incomingSessionId) };
   } catch (error) {
-    emitSendError(`dsh workspace.create failed: ${error.message}`, 'DSH');
+    emitSendError(error.message, 'DSH');
     return null;
   }
-
-  // Session identity: DSH returns the real id immediately; never mint a local UUID.
-  let sessionId = dshSession.sessionIdFromThread(incomingSessionId);
-  if (!sessionId) {
-    try {
-      sessionId = await dshSession.createSession(client, workspaceId, undefined, workCwd);
-    } catch (error) {
-      emitSendError(`dsh session.create failed: ${error.message}`, 'DSH');
-      return null;
-    }
-  }
-  return { client, sessionId };
 }
 
 /** Model selection — only when the composer picked an explicit tuple. */
