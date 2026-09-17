@@ -548,7 +548,7 @@ export async function bridgeDshQuestion(client, event, sessionId, log = () => {}
     const answers = await requestAskUserQuestionAnswers({ questions: event.questions });
     await client.respond(event.rpcId, {
       sessionId,
-      answer: { answers: mapQuestionAnswers(answers) },
+      answer: { answers: mapQuestionAnswers(answers, event.questions) },
     });
     log('[dsh] question answered');
     return true;
@@ -567,21 +567,101 @@ export async function bridgeDshQuestion(client, event, sessionId, log = () => {}
   }
 }
 
-function mapQuestionAnswers(answers) {
+/** Normalize one question's dialog answer (string | string[]) into labels. */
+function answerLabels(value) {
+  if (Array.isArray(value)) {
+    return value.filter((entry) => typeof entry === 'string' && entry.trim() !== '');
+  }
+  if (value && typeof value === 'object' && Array.isArray(value.answers)) {
+    return value.answers.filter((entry) => typeof entry === 'string' && entry.trim() !== '');
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    return [value];
+  }
+  return [];
+}
+
+/** Declared option labels of one question, used to tell choices from free text. */
+function optionLabelsOf(question) {
+  const options = question && Array.isArray(question.options) ? question.options : [];
+  const labels = new Set();
+  for (const option of options) {
+    if (option && typeof option.label === 'string' && option.label !== '') {
+      labels.add(option.label);
+    }
+  }
+  return labels;
+}
+
+/**
+ * Translate the plugin dialog's answer object into DSH's
+ * `AskUserQuestionAnswer` — `{answers:[{id, selected, custom?}]}`.
+ *
+ * The dialog is shared with Claude, which matches AskUserQuestion answers by
+ * question TEXT, so it keys its answer object by the question text and folds a
+ * typed "Other" answer into the label list
+ * (`webview/src/components/AskUserQuestionDialog/answerState.ts`).
+ *
+ * DSH is not Claude: `AskUserQuestionItem.id` is a caller-declared id "echoed
+ * in the answer", and free text travels in `custom` — for a single-select
+ * question a custom answer replaces the choice, so `selected` must then be
+ * empty. Forwarding the dialog's text keys verbatim meant the asking model got
+ * answers under ids it never issued: it could not tell which answer belonged to
+ * which question, so the answer read as "no valid reply" and users fell back to
+ * answering in the DSH Web UI.
+ *
+ * Questions the dialog left unanswered are reported as `{id, selected: []}`,
+ * mirroring the shipped Web client, so a multi-question batch stays complete.
+ *
+ * @param {object|null} answers - dialog answer object, keyed by question text.
+ * @param {Array} [questions] - the `user-questions/request` rows that were asked.
+ * @returns {Array<{id:string, selected:string[], custom?:string}>}
+ */
+export function mapQuestionAnswers(answers, questions) {
   if (!answers || typeof answers !== 'object') {
     return [];
   }
-  return Object.entries(answers).map(([id, value]) => {
-    let selected = [];
-    if (value && typeof value === 'object' && Array.isArray(value.answers)) {
-      selected = value.answers;
-    } else if (Array.isArray(value)) {
-      selected = value;
-    } else if (typeof value === 'string') {
-      selected = [value];
+  const entries = Object.entries(answers);
+  if (entries.length === 0) {
+    // Cancelled dialog: the host must see "no answers" — a batch of skipped
+    // items would instead read as "every question was declined".
+    return [];
+  }
+  const rows = Array.isArray(questions) ? questions : [];
+  const byText = new Map(entries);
+  const lookup = (text) => (byText.has(text) ? byText.get(text) : byText.get(text.trim()));
+
+  const mapped = [];
+  let matched = 0;
+  for (const question of rows) {
+    const id = asString(question && question.id);
+    const text = asString(question && question.question);
+    if (!id || !text) {
+      continue;
     }
-    return { id, selected };
-  });
+    if (!byText.has(text) && !byText.has(text.trim())) {
+      mapped.push({ id, selected: [] });
+      continue;
+    }
+    matched += 1;
+    const labels = answerLabels(lookup(text));
+    const optionLabels = optionLabelsOf(question);
+    const selected = labels.filter((label) => optionLabels.has(label));
+    // A label the question never offered is the dialog's "Other" free text.
+    const custom = labels.filter((label) => !optionLabels.has(label)).join('\n').trim();
+    const multiSelect = question.multiSelect === true;
+    const item = { id, selected: custom && !multiSelect ? [] : selected };
+    if (custom) {
+      item.custom = custom;
+    }
+    mapped.push(item);
+  }
+  if (matched === 0) {
+    // Nothing matched the question rows (legacy host, or a non-DSH shape):
+    // deliver the dialog's own keys rather than dropping the answer.
+    return entries.map(([id, value]) => ({ id, selected: answerLabels(value) }));
+  }
+  return mapped;
 }
 
 /**
@@ -664,7 +744,7 @@ export async function bridgeModernQuestion(client, clientId, event, log = () => 
       return false;
     }
     const answered = await answerWaterfall(client, clientId, event.eventId, {
-      answers: mapQuestionAnswers(answers),
+      answers: mapQuestionAnswers(answers, questions),
     }, log);
     if (answered) {
       log('[dsh] question answered');
