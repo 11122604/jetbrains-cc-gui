@@ -232,15 +232,12 @@ public class EditSnippetIndexer implements AutoCloseable {
         if (queryLines == null || queryLines.isEmpty()) {
             return hits;
         }
-        // 归一化去重后的项目根 key
-        List<String> rootKeys = new ArrayList<>();
+        // 选中的项目根原值（用于精确匹配 project_root）
+        List<String> roots = new ArrayList<>();
         if (projectRoots != null) {
             for (String root : projectRoots) {
-                if (root != null && !root.isBlank()) {
-                    String key = normalizePath(root);
-                    if (!key.isEmpty() && !rootKeys.contains(key)) {
-                        rootKeys.add(key);
-                    }
+                if (root != null && !root.isBlank() && !roots.contains(root)) {
+                    roots.add(root);
                 }
             }
         }
@@ -250,13 +247,16 @@ public class EditSnippetIndexer implements AutoCloseable {
                         + " FROM edit_snippets"
                         + " WHERE snippet_type IN ('NEW_STRING','WRITE_CONTENT')"
                         + " AND snippet_text LIKE ? ESCAPE '\\'");
-        if (!rootKeys.isEmpty()) {
+        if (!roots.isEmpty()) {
+            // 精确匹配片段自身的项目根。此前用 cwd_key 前缀匹配，会把路径恰好以所选根开头的
+            // 兄弟项目一并带入（D:\projects 命中 D:\projects\turn-right-worker），而项目选择器
+            // 把它们当作彼此独立的项目 —— 结果是选了 A 项目却搜出 B 项目的内容。
             sql.append(" AND (");
-            for (int i = 0; i < rootKeys.size(); i++) {
+            for (int i = 0; i < roots.size(); i++) {
                 if (i > 0) {
                     sql.append(" OR ");
                 }
-                sql.append("cwd_key = ? OR cwd_key LIKE ? ESCAPE '\\'");
+                sql.append("COALESCE(project_root, cwd) = ?");
             }
             sql.append(")");
         }
@@ -267,9 +267,8 @@ public class EditSnippetIndexer implements AutoCloseable {
             try (PreparedStatement ps = connection.prepareStatement(sql.toString())) {
                 int idx = 1;
                 ps.setString(idx++, pattern);
-                for (String rootKey : rootKeys) {
-                    ps.setString(idx++, rootKey);
-                    ps.setString(idx++, escapeLike(rootKey) + "/%");
+                for (String root : roots) {
+                    ps.setString(idx++, root);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -310,14 +309,24 @@ public class EditSnippetIndexer implements AutoCloseable {
 
     /**
      * 列出索引中出现过的项目根（原始路径），供「选择项目」多选。
-     * 子目录 cwd（如项目下的 webview）归并到它最浅的祖先根；同一路径保留较短的原始写法。
+     *
+     * <p>以 {@code project_root} 为准（由转录文件所在目录反解出的真实路径），缺失时退回
+     * {@code cwd}；同一路径保留较短的原始写法。
+     *
+     * <p>不按路径前缀合并「有祖先的项」：{@code D:\projects} 与
+     * {@code D:\projects\turn-right-worker} 各自拥有对应的 Claude 项目目录
+     * （{@code D--projects} 与 {@code D--projects-turn-right-worker}），是两个独立项目。
+     * 前者是后者的字符串前缀，并不代表后者是它的子目录 —— 旧的祖先过滤正是因此把
+     * {@code turn-right-worker} 从列表里抹掉，造成不同项目下看到的可选范围不一致。
      */
     public synchronized List<String> listProjectRoots() throws SQLException {
         // 归一化 key -> 一个原始展示路径（优先较短的写法）
         java.util.LinkedHashMap<String, String> canonical = new java.util.LinkedHashMap<>();
         try (Statement st = connection.createStatement();
              ResultSet rs = st.executeQuery(
-                     "SELECT DISTINCT cwd FROM edit_snippets WHERE cwd IS NOT NULL AND cwd <> ''")) {
+                     "SELECT DISTINCT COALESCE(project_root, cwd) AS root FROM edit_snippets"
+                             + " WHERE COALESCE(project_root, cwd) IS NOT NULL"
+                             + " AND COALESCE(project_root, cwd) <> ''")) {
             while (rs.next()) {
                 String raw = rs.getString(1);
                 String key = normalizePath(raw);
@@ -327,20 +336,7 @@ public class EditSnippetIndexer implements AutoCloseable {
                 }
             }
         }
-        List<String> keys = new ArrayList<>(canonical.keySet());
-        List<String> roots = new ArrayList<>();
-        for (String key : keys) {
-            boolean hasAncestor = false;
-            for (String other : keys) {
-                if (!other.equals(key) && key.startsWith(other + "/")) {
-                    hasAncestor = true;
-                    break;
-                }
-            }
-            if (!hasAncestor) {
-                roots.add(canonical.get(key));
-            }
-        }
+        List<String> roots = new ArrayList<>(canonical.values());
         roots.sort(String.CASE_INSENSITIVE_ORDER);
         return roots;
     }
