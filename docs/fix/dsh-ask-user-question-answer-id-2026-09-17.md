@@ -112,11 +112,15 @@ DSH 的协议契约（`@deepseek-ai/dsh-user-questions`）：
 
 ---
 
-## 五、次生风险（已核实，未在本次改动范围内）
+## 五、次生风险（后续已在本 PR 内修复）
 
-1. **`turn.clientId` 未就绪时答案被静默丢弃**：`answerWaterfall` 在 `$events` 尚未收到 `ready` 帧时直接 `return false`（日志 `[dsh] dropping a waterfall answer: the $events stream has no clientId yet`，只在 Node stderr，IDE 侧默认不可见）。此时 cc-gui 弹窗已经关闭、宿主仍在等待，用户只能去 dsh-web 答。建议：发答案前有界等待 `ready`，或把失败显式回报给前端并让弹窗可重答。
-2. **`dialogToken` 不匹配会被静默吞掉**：`PermissionHandler.handleAskUserQuestionResponse` 在 token 比对失败时直接 `return`，future 要等到安全网超时才由 `showAskUserQuestionDialog` 以空对象结束，最终表现为 `{"answers":[]}`——与「用户取消」无法区分。排查时看是否缺 `[ASK_USER_QUESTION][HANDLE_RESPONSE]` 且随后出现 `Safety-net timeout fired`。
-3. **DSH 的 `detail` / `intent` 被前端丢弃**：`normalizeQuestion` 只保留 `question/header/options/multiSelect`。DSH 计划模式复核走的是 `user-questions/request`（`id: "plan-review"`、`detail` = 计划 markdown、`intent.kind = "plan-review"`），在 cc-gui 里只会显示「Approve this plan and leave plan mode?」加两个选项、**看不到计划正文**，标题还是「Claude 有一些问题想问你」。答案本身已被本次修复救回，但复核界面仍不可用。
+前三条已在同一 PR 内补修（提交 `7cbe7ef5` / `acfa628b` / `61f355ef`）：
+
+1. **`turn.clientId` 未就绪时答案被静默丢弃** —— ✅ 已修（`7cbe7ef5`）：`answerWaterfall` 原来在 `$events` 未收到 `ready` 帧时直接 `return false`（日志只在 Node stderr，IDE 侧不可见），用户在弹窗里答完却被丢弃。现在 approval / question 两个 bridge 都会**先有界等待**（`CLIENT_ID_WAIT_MS = 3s`，`resolveClientId()` 接受 id 或取值函数）拿到当前 generation 的 clientId 再弹窗；等不到就记日志并且**不弹窗**（不会让用户答一个注定发不出去的答案）。`message-service` 改为传 `() => turn.clientId`，等的是实时值而非帧到达时的快照。
+2. **`dialogToken` 不匹配被静默吞掉** —— ✅ 已修（`61f355ef`）：`PermissionHandler.handleAskUserQuestionResponse` 的静默 `return` 拆成两种可诊断分支（requestId 不存在 / token 与 pending 不一致），各打一条 WARN；语义不变（仍忽略，且保留 pending 请求给复用了同一 requestId 的新弹窗），但排查时不再需要靠"缺日志"反推。
+3. **DSH 的 `detail` / `intent` 被前端丢弃** —— ✅ 已修（`acfa628b`）：`normalizeQuestion` 保留 `detail` 与归一化后的 `intent`；`QuestionSection` 用现有 `MarkdownBlock` 在选项上方渲染计划正文（plan-review 带「计划内容」标题，面板限高可滚动）；`provider` 现在从 `permission-ipc` 一路透传到弹窗（两个 bridge 都发 `dsh`），标题不再把 DSH 说成「Claude 有一些问题想问你」。
+
+仅剩第 4 条作为**同类症状线索**保留（Claude 长驻 daemon 的 routing id 漂移，与 DSH 无关）：
 4. **孤立 IPC 文件（Claude 路径，非 DSH）**：`%TEMP%\claude-permission\ask-user-question-307c1658-…json`（2026-09-15 11:49，cwd `D:\code\广排\psgs-server-v2`）未被任何 watcher 认领。其 questions 没有 `id` 字段，是 Claude 的 AskUserQuestion 形状（DSH 的 `id` 是必填、且经 JSON 无损校验，缺 id 的请求根本到不了插件），说明是 Claude 侧长驻 daemon 的 `CLAUDE_SESSION_ID` 与当时 watcher 的 routing id 漂移。DSH 每轮新起进程、不受此影响，仅作为同类症状的另一条线索记录。
 
 ---
