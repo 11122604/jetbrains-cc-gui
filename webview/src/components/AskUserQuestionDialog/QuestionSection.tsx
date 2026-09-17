@@ -1,6 +1,7 @@
 import { useEffect, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Question } from '../AskUserQuestionDialog';
+import MarkdownBlock from '../MarkdownBlock';
 import QuestionOptionRow from './QuestionOptionRow';
 import { OTHER_OPTION_MARKER, MAX_CUSTOM_INPUT_LENGTH } from './constants';
 
@@ -39,6 +40,19 @@ const QuestionSection = ({
         <span className="question-tag">{question.header}</span>
       </div>
       <p className="question-text">{question.question}</p>
+
+      {/* Supporting detail (DSH's plan under review). It is the thing being
+          approved or declined, so it must be readable in the dialog. */}
+      {question.detail && (
+        <div className="question-detail">
+          {question.intent?.kind === 'plan-review' && (
+            <div className="question-detail-label">
+              {t('askUserQuestion.planDetail', '计划内容')}
+            </div>
+          )}
+          <MarkdownBlock content={question.detail} />
+        </div>
+      )}
 
       {/* Options list */}
       <div className="question-options">
