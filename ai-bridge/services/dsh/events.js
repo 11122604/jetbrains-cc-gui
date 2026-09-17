@@ -407,11 +407,15 @@ export function projectRemoteEventFrame(value) {
       }
       const request = value.request && typeof value.request === 'object' ? value.request : {};
       const event = asString(value.event);
+      // The host scopes a forwarded waterfall to the Agent that raised it, and a
+      // DSH agent id IS its session id (host: "agent and its session share one
+      // id, 1:1, same axis"), so the frame names the session it belongs to.
+      const agentId = asString(value.agentId);
       if (event === 'approval/request') {
-        return { kind: 'approval-request', eventId, request };
+        return { kind: 'approval-request', eventId, agentId, request };
       }
       if (event === 'user-questions/request') {
-        return { kind: 'question-request', eventId, request };
+        return { kind: 'question-request', eventId, agentId, request };
       }
       return null;
     }
@@ -422,6 +426,31 @@ export function projectRemoteEventFrame(value) {
     default:
       return null;
   }
+}
+
+/**
+ * Whether a forwarded `$events` waterfall belongs to the session this bridge is
+ * serving.
+ *
+ * The host broadcasts every forwarded waterfall to every `$events` client, so a
+ * turn that answers whatever arrives pops someone else's dialog: a question —
+ * or an approval — raised by another IDE tab, or by the user's own `dsh web`
+ * session, would land in this window, and whoever answers first settles the
+ * waterfall for everyone. The frame's `agentId` is the raising Agent's id,
+ * which is the session id, so ownership is a plain id comparison.
+ *
+ * A frame without `agentId` (older host) is accepted, as before.
+ *
+ * @param {string} agentId - session an incoming waterfall belongs to.
+ * @param {string} sessionId - session this turn is serving.
+ * @returns {boolean} whether this turn may answer it.
+ */
+export function waterfallBelongsToSession(agentId, sessionId) {
+  const owner = asString(agentId);
+  if (!owner) {
+    return true;
+  }
+  return owner === asString(sessionId);
 }
 
 /** Tool name of an `approval/request` waterfall payload. */

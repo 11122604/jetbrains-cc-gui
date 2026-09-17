@@ -157,8 +157,36 @@ DSH 的协议契约（`@deepseek-ai/dsh-user-questions`）：
 
 ---
 
-## 八、核心文件
+## 八、同一个 PR 内一并修复：waterfall 未按会话过滤（弹错窗口）
 
-- `ai-bridge/services/dsh/events.js`（`mapQuestionAnswers` 重写 + 两个 bridge 调用点传参）
-- `ai-bridge/services/dsh/events.test.js`（新增 5 个映射用例）
+**症状**：cc-gui 里弹窗「串窗口」——别的会话提的问题/审批弹到了当前窗口；dsh-web 侧正常，因为它按会话作用域订阅。用户视角是「虽然有提问，但答复无效 / 不是我这边问的却在我这弹」。
+
+**根因**：`$events` 是 **host 全局流**。gateway 把每个 forwarded waterfall 广播给**所有** `$events` 客户端（`deliverRemoteEvent` 遍历 `remoteEventClients`），而 `subscribeModernStreams` 的 `$events` 处理器对 `approval/request` / `user-questions/request` **没有任何归属判断**，收到就 `bridgeModernQuestion` / `bridgeModernApproval` → 弹到当前窗口，并且 **host 用第一个结果 settle waterfall**，所以插件还会把别的会话的答案抢掉。
+
+归属可判定：DSH 源码 `@deepseek-ai/dsh-api-session-controller/lib/scope.js` 明确写着 —— *"agent and its session share one id (1:1, same axis; no separate AgentId ...)"*，而 gateway 构造 waterfall 帧时带上 `agentId: source.context.agentId`（`dsh-api-gateway/lib/index.js`），因此帧里的 `agentId` **就是** 该请求所属的 sessionId。
+
+**修复**：
+
+- `events.js` — `projectRemoteEventFrame()` 把帧里的 `agentId` 一并带出；新增导出 `waterfallBelongsToSession(agentId, sessionId)`（缺失 `agentId` 的旧 host 按旧行为接受）。
+- `message-service.js` — `$events` 处理器在进入 approval/question 分支前过滤：不属于本会话的请求记一条 `[dsh] ignoring a … for session … (this turn serves …)` 后忽略。**忽略 ≠ 拒绝**：该请求在本客户端仍保持 pending，由真正拥有它的客户端回答。`ready` / `cancel` 逻辑不变；`lastActivityAt` 改为只在本会话帧上更新，避免别家流量掩盖自家静默。
+- `events.test.js` — 帧形状带 `agentId` + 归属判定真值表。
+
+**验证（本地 mock host，同一次运行同时推「别的会话」与「本会话」两个 waterfall）**：
+
+| bridge | 弹窗收到的题目集合 | 结论 |
+| --- | --- | --- |
+| 修复前（已安装副本，仅有答案映射修复） | `[["foreign"], ["prescheck","otherfix","cadence","unused"]]` 且 `foreign waterfall answered here: true` | 弹错窗口**并替别人作答** |
+| 修复后 | `[["prescheck","otherfix","cadence","unused"]]` + 忽略日志 | 只处理本会话 |
+
+同一 mock 还断言了答案编码（声明 id 回填、`custom` 承载自由文本、未作答补 `{id, selected: []}`）。dsh 套件 115/115；全量 ai-bridge 760 tests / 757 pass / 3 skipped / 0 fail。
+
+> 影响面提醒：**approval 走同一条流** —— 修复前别的会话的授权请求会弹到当前窗口，用户点「允许」等于替别人批准了工具调用。本次过滤同时覆盖两类 waterfall。
+
+---
+
+## 九、核心文件
+
+- `ai-bridge/services/dsh/events.js`（`mapQuestionAnswers` 重写 + 两个 bridge 调用点传参；`projectRemoteEventFrame` 带出 `agentId` + `waterfallBelongsToSession`）
+- `ai-bridge/services/dsh/message-service.js`（`$events` 按会话过滤 waterfall；活动时间只计本会话帧）
+- `ai-bridge/services/dsh/events.test.js`（新增 5 个映射用例 + 归属判定用例）
 - `ai-bridge/services/dsh/question-bridge.test.js`（新增集成用例 4 个）

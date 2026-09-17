@@ -31,6 +31,7 @@ import {
   projectFollowFrame,
   projectMuxFrame,
   projectRemoteEventFrame,
+  waterfallBelongsToSession,
 } from './events.js';
 import { DshRemoteMux } from './stream-client.js';
 import { ensureHost, runtimeSettingsFromEnv } from './supervisor.js';
@@ -362,11 +363,39 @@ function subscribeModernStreams(client, sessionId, turn) {
       if (!instruction) {
         return;
       }
+      if (instruction.kind === 'ready') {
+        turn.clientId = instruction.clientId;
+        turn.lastActivityAt = Date.now();
+        return;
+      }
+      if (instruction.kind === 'cancel') {
+        // The host withdrew the waterfall: mark it so a late user answer is
+        // not posted, and release the drain — the bridge promise keeps
+        // running in the background until the Java-side prompt resolves
+        // (there is no IPC to dismiss that dialog from here).
+        turn.withdrawnWaterfalls.add(instruction.eventId);
+        if (turn.waterfallBridges.has(instruction.eventId)) {
+          turn.pendingBridges.delete(turn.waterfallBridges.get(instruction.eventId));
+          turn.waterfallBridges.delete(instruction.eventId);
+        }
+        logDebug(`[dsh] waterfall ${instruction.eventId} withdrawn by the host`);
+        return;
+      }
+      // Approval and question waterfalls arrive on a host-wide stream: every
+      // `$events` client is offered every session's requests. Answering one that
+      // belongs to another session would pop this window's dialog for a question
+      // nobody here asked (and steal the reply), so only this turn's own session
+      // is prompted. The foreign request stays pending for the client that owns
+      // it — dropping it here is not a rejection.
+      if (!waterfallBelongsToSession(instruction.agentId, sessionId)) {
+        logDebug(
+          `[dsh] ignoring a ${instruction.kind} for session ${instruction.agentId} `
+          + `(this turn serves ${sessionId})`
+        );
+        return;
+      }
       turn.lastActivityAt = Date.now();
       switch (instruction.kind) {
-        case 'ready':
-          turn.clientId = instruction.clientId;
-          break;
         case 'approval-request':
           turn.waterfallBridges.set(
             instruction.eventId,
@@ -398,18 +427,6 @@ function subscribeModernStreams(client, sessionId, turn) {
               'question'
             )
           );
-          break;
-        case 'cancel':
-          // The host withdrew the waterfall: mark it so a late user answer is
-          // not posted, and release the drain — the bridge promise keeps
-          // running in the background until the Java-side prompt resolves
-          // (there is no IPC to dismiss that dialog from here).
-          turn.withdrawnWaterfalls.add(instruction.eventId);
-          if (turn.waterfallBridges.has(instruction.eventId)) {
-            turn.pendingBridges.delete(turn.waterfallBridges.get(instruction.eventId));
-            turn.waterfallBridges.delete(instruction.eventId);
-          }
-          logDebug(`[dsh] waterfall ${instruction.eventId} withdrawn by the host`);
           break;
         default:
           break;

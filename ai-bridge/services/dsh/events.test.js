@@ -11,6 +11,7 @@ import {
   projectMuxFrame,
   projectRemoteEventFrame,
   unwrapMuxEnvelope,
+  waterfallBelongsToSession,
 } from './events.js';
 
 test('unwrapMuxEnvelope handles wrapped and bare frames', () => {
@@ -179,18 +180,30 @@ test('projectRemoteEventFrame distinguishes ready, waterfalls and cancel', () =>
       type: 'waterfall',
       event: 'approval/request',
       eventId: 'e1',
+      agentId: 'session-a',
       request: { toolName: 'pwsh', reason: 'escalate' },
     }),
-    { kind: 'approval-request', eventId: 'e1', request: { toolName: 'pwsh', reason: 'escalate' } }
+    {
+      kind: 'approval-request',
+      eventId: 'e1',
+      agentId: 'session-a',
+      request: { toolName: 'pwsh', reason: 'escalate' },
+    }
   );
   assert.deepEqual(
     projectRemoteEventFrame({
       type: 'waterfall',
       event: 'user-questions/request',
       eventId: 'e2',
+      agentId: 'session-b',
       request: { questions: [{ id: 'q1', question: 'Pick' }] },
     }),
-    { kind: 'question-request', eventId: 'e2', request: { questions: [{ id: 'q1', question: 'Pick' }] } }
+    {
+      kind: 'question-request',
+      eventId: 'e2',
+      agentId: 'session-b',
+      request: { questions: [{ id: 'q1', question: 'Pick' }] },
+    }
   );
   assert.deepEqual(projectRemoteEventFrame({ type: 'cancel', eventId: 'e3' }), {
     kind: 'cancel',
@@ -201,6 +214,31 @@ test('projectRemoteEventFrame distinguishes ready, waterfalls and cancel', () =>
   assert.equal(projectRemoteEventFrame({ type: 'waterfall', event: 'other/event', eventId: 'e' }), null);
   assert.equal(projectRemoteEventFrame({ type: 'ready' }), null);
   assert.equal(projectRemoteEventFrame(undefined), null);
+});
+
+// A `$events` stream is host-wide: every client is offered every session's
+// waterfalls. Answering one that belongs to another session popped this window's
+// dialog for a question nobody here asked and stole the reply (the host settles
+// a waterfall for whoever answers first). The frame's agentId IS the session id.
+test('waterfallBelongsToSession accepts only this session (and unknown owners)', () => {
+  assert.equal(waterfallBelongsToSession('session-a', 'session-a'), true);
+  assert.equal(waterfallBelongsToSession('session-b', 'session-a'), false);
+  assert.equal(waterfallBelongsToSession('session-a-sub', 'session-a'), false);
+  // Older hosts that omit the owner keep the previous behaviour.
+  assert.equal(waterfallBelongsToSession('', 'session-a'), true);
+  assert.equal(waterfallBelongsToSession(undefined, 'session-a'), true);
+  // A session-less turn cannot claim a scoped waterfall.
+  assert.equal(waterfallBelongsToSession('session-a', ''), false);
+  // A mapping that carries the owner through applies the same rule.
+  const instruction = projectRemoteEventFrame({
+    type: 'waterfall',
+    event: 'user-questions/request',
+    eventId: 'e9',
+    agentId: 'other-session',
+    request: { questions: [{ id: 'q1', question: 'Pick' }] },
+  });
+  assert.equal(waterfallBelongsToSession(instruction.agentId, 'session-a'), false);
+  assert.equal(waterfallBelongsToSession(instruction.agentId, 'other-session'), true);
 });
 test('modern bridges skip a waterfall the host already withdrew', async () => {
   const posted = [];
