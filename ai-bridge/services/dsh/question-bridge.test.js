@@ -186,3 +186,87 @@ test('the request file carries the model-declared questions verbatim', async () 
   assert.deepEqual(observed.questions, QUESTIONS);
   assert.deepEqual(answers, { '你希望怎样确认提交？': '按阶段批量确认（推荐）' });
 });
+
+// The dialog titles itself per provider; DSH used to be labelled "Claude".
+test('the DSH bridge names its provider on the dialog request', async () => {
+  const { bridgeModernQuestion } = await import('./events.js');
+
+  let observed = null;
+  const responder = answerNextDialog(
+    { '你希望怎样确认提交？': '整单拒绝' },
+    (request) => {
+      observed = request;
+    },
+  );
+  const client = { async answerRemoteEvent() {} };
+  const ok = await bridgeModernQuestion(
+    client,
+    'client-provider',
+    { eventId: 'event-provider', request: { questions: QUESTIONS } },
+    () => {},
+  );
+  clearInterval(responder);
+
+  assert.equal(ok, true);
+  assert.equal(observed.provider, 'dsh');
+});
+
+// A waterfall normally arrives after the `$events` `ready` frame, but a
+// reconnect can deliver one before it — the answer is routed by that id, so the
+// bridge waits for the live value instead of dropping the reply.
+test('a waterfall waits for the live $events client id before answering', async () => {
+  const { bridgeModernQuestion } = await import('./events.js');
+
+  const posted = [];
+  const client = {
+    async answerRemoteEvent(...args) {
+      posted.push(args);
+    },
+  };
+  // Null for the first two polls, then the generation's id arrives.
+  let polls = 0;
+  const clientIdSource = () => {
+    polls += 1;
+    return polls <= 2 ? null : 'client-late';
+  };
+
+  const responder = answerNextDialog({ '你希望怎样确认提交？': '整单拒绝' });
+  const ok = await bridgeModernQuestion(
+    client,
+    clientIdSource,
+    { eventId: 'event-late', request: { questions: QUESTIONS } },
+    () => {},
+  );
+  clearInterval(responder);
+
+  assert.equal(ok, true);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0][0], 'client-late');
+});
+
+// No id within the wait window means the answer could never be posted, so the
+// user must not be prompted for it at all (the file IPC stays untouched).
+test('a waterfall without a client id is dropped before prompting', async () => {
+  const { bridgeModernApproval } = await import('./events.js');
+  const { readdirSync } = await import('node:fs');
+
+  const answered = [];
+  const client = {
+    async answerRemoteEvent(...args) {
+      answered.push(args);
+    },
+  };
+  const logs = [];
+  const ok = await bridgeModernApproval(
+    client,
+    () => null,
+    { eventId: 'event-noid', request: { toolName: 'pwsh' } },
+    (line) => logs.push(line),
+  );
+
+  assert.equal(ok, false);
+  assert.equal(answered.length, 0, 'nothing may be posted without a client id');
+  assert.equal(readdirSync(DIR).filter((name) => name.startsWith('request-')).length, 0,
+    'the permission dialog must not be opened when the answer could not be posted');
+  assert.ok(logs.some((line) => line.includes('no clientId')), 'the drop must be logged');
+});

@@ -403,7 +403,10 @@ function subscribeModernStreams(client, sessionId, turn) {
               turn,
               bridgeModernApproval(
                 client,
-                turn.clientId,
+                // Live getter: a waterfall may arrive before (or across) the
+                // `ready` frame, and the bridge waits briefly for the id rather
+                // than prompting a dialog whose answer cannot be posted.
+                () => turn.clientId,
                 instruction,
                 logDebug,
                 () => turn.withdrawnWaterfalls.has(instruction.eventId)
@@ -419,7 +422,7 @@ function subscribeModernStreams(client, sessionId, turn) {
               turn,
               bridgeModernQuestion(
                 client,
-                turn.clientId,
+                () => turn.clientId,
                 instruction,
                 logDebug,
                 () => turn.withdrawnWaterfalls.has(instruction.eventId)

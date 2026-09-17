@@ -574,7 +574,10 @@ export async function bridgeDshApproval(client, event, sessionId, log = () => {}
  */
 export async function bridgeDshQuestion(client, event, sessionId, log = () => {}) {
   try {
-    const answers = await requestAskUserQuestionAnswers({ questions: event.questions });
+    const answers = await requestAskUserQuestionAnswers({
+      questions: event.questions,
+      provider: 'dsh',
+    });
     await client.respond(event.rpcId, {
       sessionId,
       answer: { answers: mapQuestionAnswers(answers, event.questions) },
@@ -693,6 +696,46 @@ export function mapQuestionAnswers(answers, questions) {
   return mapped;
 }
 
+/** How long a waterfall may wait for the `$events` stream's per-generation id. */
+const CLIENT_ID_WAIT_MS = 3_000;
+const CLIENT_ID_POLL_MS = 50;
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Resolve the per-generation `$events` client id that a waterfall answer must
+ * quote.
+ *
+ * The host routes an answer by `clientId` + `eventId`, and `clientId` is minted
+ * per stream generation by the opening `ready` frame. A waterfall normally
+ * arrives after that frame, but a reconnect (or a request replayed into a fresh
+ * generation) can deliver one before it — and an answer posted with a stale or
+ * missing id is rejected by the host. Waiting briefly here means a dialog is
+ * only ever shown when its answer can actually be posted; the previous
+ * behaviour prompted the user and then silently dropped the answer.
+ *
+ * @param {string|Function} source - a client id, or a getter for the live value.
+ * @returns {Promise<string|null>} the id, or null when none arrived in time.
+ */
+async function resolveClientId(source) {
+  const read = typeof source === 'function' ? source : () => source;
+  const deadline = Date.now() + CLIENT_ID_WAIT_MS;
+  for (;;) {
+    const value = read();
+    if (typeof value === 'string' && value) {
+      return value;
+    }
+    if (Date.now() >= deadline) {
+      return null;
+    }
+    await sleep(CLIENT_ID_POLL_MS);
+  }
+}
+
 /**
  * Settle one modern waterfall frame. `$events/result` accepts only
  * `{kind, value?}` — a stray key makes the whole answer invalid, which tears
@@ -700,7 +743,7 @@ export function mapQuestionAnswers(answers, questions) {
  */
 async function answerWaterfall(client, clientId, eventId, value, log) {
   if (!clientId) {
-    log('[dsh] dropping a waterfall answer: the $events stream has no clientId yet');
+    log('[dsh] dropping a waterfall answer: the $events stream reported no clientId');
     return false;
   }
   await client.answerRemoteEvent(clientId, eventId, value);
@@ -714,12 +757,22 @@ async function answerWaterfall(client, clientId, eventId, value, log) {
  * `isWithdrawn` reports a host-side `cancel` for this eventId: a withdrawn
  * waterfall must neither prompt the user nor be answered, because the host's
  * event generation that would consume the answer is already gone.
+ *
+ * @param {string|Function} clientId - id, or getter for the live `$events` id.
  */
 export async function bridgeModernApproval(client, clientId, event, log = () => {}, isWithdrawn = () => false) {
   const request = event && event.request && typeof event.request === 'object' ? event.request : {};
   const toolName = approvalToolName(request);
   if (isWithdrawn()) {
     log(`[dsh] approval ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
+  const resolvedClientId = await resolveClientId(clientId);
+  if (!resolvedClientId) {
+    log(
+      `[dsh] approval ${event.eventId} dropped: the $events stream reported no clientId `
+      + `within ${CLIENT_ID_WAIT_MS}ms, so the answer could not be posted`
+    );
     return false;
   }
   try {
@@ -735,7 +788,7 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
     }
     const answered = await answerWaterfall(
       client,
-      clientId,
+      resolvedClientId,
       event.eventId,
       allowed ? 'allowed-once' : 'rejected',
       log
@@ -747,7 +800,7 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
   } catch (error) {
     log(`[dsh] approval answer failed: ${error.message}`);
     try {
-      await answerWaterfall(client, clientId, event.eventId, 'rejected', log);
+      await answerWaterfall(client, resolvedClientId, event.eventId, 'rejected', log);
     } catch {
       // Secondary failure: the host keeps the request pending until the turn
       // is aborted — there is no host-side watchdog for a waterfall.
@@ -759,6 +812,8 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
 /**
  * Settle a modern `user-questions/request` waterfall with the
  * `{answers:[{id, selected, custom?}]}` shape the asker's output schema requires.
+ *
+ * @param {string|Function} clientId - id, or getter for the live `$events` id.
  */
 export async function bridgeModernQuestion(client, clientId, event, log = () => {}, isWithdrawn = () => false) {
   const questions = questionRows(event && event.request);
@@ -766,13 +821,21 @@ export async function bridgeModernQuestion(client, clientId, event, log = () => 
     log(`[dsh] question ${event.eventId} withdrawn before prompting`);
     return false;
   }
+  const resolvedClientId = await resolveClientId(clientId);
+  if (!resolvedClientId) {
+    log(
+      `[dsh] question ${event.eventId} dropped: the $events stream reported no clientId `
+      + `within ${CLIENT_ID_WAIT_MS}ms, so the answer could not be posted`
+    );
+    return false;
+  }
   try {
-    const answers = await requestAskUserQuestionAnswers({ questions });
+    const answers = await requestAskUserQuestionAnswers({ questions, provider: 'dsh' });
     if (isWithdrawn()) {
       log(`[dsh] question ${event.eventId} withdrawn; the answer is not posted`);
       return false;
     }
-    const answered = await answerWaterfall(client, clientId, event.eventId, {
+    const answered = await answerWaterfall(client, resolvedClientId, event.eventId, {
       answers: mapQuestionAnswers(answers, questions),
     }, log);
     if (answered) {
