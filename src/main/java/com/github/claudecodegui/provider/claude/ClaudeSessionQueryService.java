@@ -3,6 +3,7 @@ package com.github.claudecodegui.provider.claude;
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.bridge.ProcessManager;
+import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.util.PlatformUtils;
 import com.github.claudecodegui.util.UserMessageSanitizer;
 import com.google.gson.Gson;
@@ -66,6 +67,10 @@ class ClaudeSessionQueryService {
     List<JsonObject> getSessionMessages(String sessionId, String cwd) {
         try {
             JsonObject jsonResult = runSessionQuery("getSession", sessionId, cwd, "getSessionMessages");
+
+            if (jsonResult.has("missing") && jsonResult.get("missing").getAsBoolean()) {
+                throw new SessionHistoryNotFoundException(sessionId, cwd);
+            }
 
             if (jsonResult.has("success") && jsonResult.get("success").getAsBoolean()) {
                 List<JsonObject> messages = new ArrayList<>();

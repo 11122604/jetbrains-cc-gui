@@ -117,12 +117,17 @@ export function loadSessionHistory(sessionId, cwd) {
  * Build the getSessionMessages response payload by reading a JSONL session
  * file. Exported (not just inlined) so the parse + carrier-rewrite logic is
  * unit-testable without going through process.stdout: the test only needs a
- * temp file, not an stdout spy. Returns { success, messages } - empty messages
- * when the file is missing.
+ * temp file, not an stdout spy. A missing file is reported separately from a
+ * valid transcript that happens to contain no messages.
  */
 export function buildSessionMessagesPayload(sessionFile) {
   if (!existsSync(sessionFile)) {
-    return { success: true, messages: [] };
+    return {
+      success: false,
+      missing: true,
+      error: 'Session history file not found',
+      messages: [],
+    };
   }
   const content = readFileSync(sessionFile, 'utf8');
   const messages = selectConversationChain(parseJsonlContent(content))
