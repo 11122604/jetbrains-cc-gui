@@ -1,6 +1,6 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { QueuedMessage } from '../../hooks/useMessageQueue';
-import { useDragSort } from '../settings/hooks/useDragSort';
+import { createEdgeInsertResolver, useDragSort } from '../settings/hooks/useDragSort';
 import { useDragAutoScroll } from './hooks/useDragAutoScroll.js';
 
 export interface MessageQueueProps {
@@ -29,13 +29,26 @@ export function MessageQueue({ queue, onRemove, onReorder }: MessageQueueProps) 
     onReorder?.(orderedIds);
   }, [onReorder]);
 
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Row middle drops 'on' the row (legacy dashed highlight); row edges, gaps
+  // and container padding resolve to insert slots. Rows are displayed in
+  // reverse of queue order, so `reversed` flips placements into queue order.
+  const resolveDropTarget = useMemo(
+    () => createEdgeInsertResolver(() => containerRef.current, { reversed: true }),
+    [],
+  );
+
   // Only the pointer-based path is used; `queue` (parent state) is the single
   // source of truth for rendering because reorder applies synchronously.
-  const { draggedId, dragOverId, handlePointerDown } = useDragSort({ items: queue, onSort: handleSort });
+  const { draggedId, dragOverId, dragOverPlacement, handlePointerDown } = useDragSort({
+    items: queue,
+    onSort: handleSort,
+    resolveDropTarget,
+  });
 
   // The list is a fixed-height scroll container; auto-scroll it while dragging
   // near its edges so rows outside the viewport can be reached.
-  const containerRef = useRef<HTMLDivElement>(null);
   useDragAutoScroll(containerRef, draggedId !== null);
 
   if (queue.length === 0) {
@@ -50,10 +63,15 @@ export function MessageQueue({ queue, onRemove, onReorder }: MessageQueueProps) 
       {[...queue].reverse().map((item, reversedIndex) => {
         // Calculate actual queue position (1-based, from bottom)
         const queuePosition = queue.length - reversedIndex;
+        // Placement is in queue order; the display is reversed, so 'after'
+        // (higher index) draws the insert line above the row and 'before' below it.
+        const isDragOver = dragOverId === item.id;
         const itemClassName = [
           'message-queue-item',
           draggedId === item.id && 'dragging',
-          dragOverId === item.id && 'drag-over',
+          isDragOver && dragOverPlacement === 'on' && 'drag-over',
+          isDragOver && dragOverPlacement === 'after' && 'insert-above',
+          isDragOver && dragOverPlacement === 'before' && 'insert-below',
         ].filter(Boolean).join(' ');
         return (
           <div key={item.id} className={itemClassName} data-drag-sort-id={item.id}>
