@@ -56,4 +56,48 @@ describe('dollarCommandProvider', () => {
       }),
     ]);
   });
+
+  it('fails fast after a loading timeout instead of re-waiting on every query', async () => {
+    vi.useFakeTimers();
+    try {
+      const firstPromise = dollarCommandProvider('', new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(30000);
+
+      await expect(firstPromise).resolves.toEqual([
+        expect.objectContaining({ id: '__error__' }),
+      ]);
+
+      // Later queries must resolve immediately, not wait another 30 seconds.
+      await expect(
+        dollarCommandProvider('', new AbortController().signal)
+      ).resolves.toEqual([
+        expect.objectContaining({ id: '__error__' }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers when a late payload arrives after a timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const firstPromise = dollarCommandProvider('', new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(30000);
+      await expect(firstPromise).resolves.toEqual([
+        expect.objectContaining({ id: '__error__' }),
+      ]);
+
+      window.updateDollarCommands?.(JSON.stringify([
+        { name: '$review-code', source: 'codex-skill' },
+      ]));
+
+      await expect(
+        dollarCommandProvider('', new AbortController().signal)
+      ).resolves.toEqual([
+        expect.objectContaining({ id: 'review-code', contentType: 'skill' }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

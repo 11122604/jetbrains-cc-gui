@@ -148,6 +148,14 @@ function waitForDollarCommands(signal: AbortSignal, timeoutMs: number): Promise<
 
     const timeoutId = window.setTimeout(() => {
       cleanup();
+      // Fail fast on later queries instead of re-waiting the full timeout each
+      // keystroke when the backend never pushes the dollar payload. A late
+      // payload still recovers through the registered handler.
+      if (loadingState !== 'success' && loadingState !== 'failed') {
+        loadingState = 'failed';
+        debugWarn('[DollarCommand] Loading timeout');
+        notifyDollarWaiters();
+      }
       resolve();
     }, timeoutMs);
 
