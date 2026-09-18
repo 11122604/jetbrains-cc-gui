@@ -518,7 +518,14 @@ export function registerMessageCallbacks(
           ? Math.max(0, storedBaseIndex)
           : 0;
         const backendMessageCount = prev.length - prependedCount;
+        // A tail cannot bridge a missing prefix in an existing full transcript.
+        // Retain it until a complete snapshot arrives; empty pages can start a window.
         const hasFullPrefix = currentBaseIndex === 0 && baseIndex <= backendMessageCount;
+        const startsTailWindow = baseIndex > 0
+          && (currentBaseIndex > 0 || prev.length === 0);
+        if (!hasFullPrefix && !startsTailWindow && baseIndex > 0) {
+          return prev;
+        }
         let merged = hasFullPrefix
           ? [...prev.slice(0, prependedCount + baseIndex), ...tail]
           : [...prependedHistory, ...tail];

@@ -758,12 +758,15 @@ public class HistoryMessageInjector {
 
     private static void restoreCodexFrontendMessagesToSessionState(SessionState state,
                                                                     List<JsonObject> frontendMessages) {
-        state.clearMessages();
+        List<ClaudeSession.Message> restoredMessages = new ArrayList<>(frontendMessages.size());
         for (JsonObject frontendMsg : frontendMessages) {
             ClaudeSession.Message restoredMessage = toSessionMessage(frontendMsg);
             if (restoredMessage != null) {
-                state.addMessage(restoredMessage);
+                restoredMessages.add(restoredMessage);
             }
+        }
+        synchronized (state.getMessageStateLock()) {
+            state.replaceMessages(restoredMessages);
         }
     }
 

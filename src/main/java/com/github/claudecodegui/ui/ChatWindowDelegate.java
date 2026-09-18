@@ -48,7 +48,6 @@ import com.github.claudecodegui.provider.common.SDKResult;
 import com.github.claudecodegui.session.SessionLifecycleManager;
 import com.github.claudecodegui.session.StreamMessageCoalescer;
 import com.github.claudecodegui.util.JsUtils;
-import com.github.claudecodegui.util.MessageJsonConverter;
 import com.google.gson.JsonObject;
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.application.ApplicationManager;
@@ -580,6 +579,9 @@ public class ChatWindowDelegate {
         host.callJavaScript("showLoading", "true");
 
         host.getSession().send(prompt, null, (String) null).thenRun(() -> {
+            // Only the last message's content string is read, and content is immutable,
+            // so the shallow copy is enough — getMessagesSnapshot would deep-copy every
+            // raw tree in the transcript for a value this call never touches.
             List<ClaudeSession.Message> messages = host.getSession().getMessages();
             if (!messages.isEmpty()) {
                 ClaudeSession.Message last = messages.get(messages.size() - 1);
@@ -632,7 +634,17 @@ public class ChatWindowDelegate {
             });
         }
 
-        host.getStreamCoalescer().flush(null);
+        // flush(null) may deep-copy live messages left by the previous stream, and
+        // the coalescer contract requires the message-state lock for that copy.
+        // No session means no live writer, so the lockless call is then safe.
+        ClaudeSession currentSession = host.getSession();
+        if (currentSession == null) {
+            host.getStreamCoalescer().flush(null);
+            return;
+        }
+        synchronized (currentSession.getState().getMessageStateLock()) {
+            host.getStreamCoalescer().flush(null);
+        }
     }
 
     /**
@@ -741,11 +753,8 @@ public class ChatWindowDelegate {
                 host.callJavaScript("setSessionId", JsUtils.escapeJs(sessionId));
             }
 
-            List<ClaudeSession.Message> messages = session.getMessages();
-            if (!messages.isEmpty()) {
-                String messagesJson = MessageJsonConverter.convertMessagesToJson(messages);
-                host.callJavaScript("updateMessages", JsUtils.escapeJs(messagesJson));
-            }
+            List<ClaudeSession.Message> messages = session.getMessagesSnapshot();
+            host.getStreamCoalescer().replayLatestSnapshot(messages);
 
             host.callJavaScript("showLoading", String.valueOf(session.isLoading()));
             host.callJavaScript("showThinkingStatus", String.valueOf(false));
