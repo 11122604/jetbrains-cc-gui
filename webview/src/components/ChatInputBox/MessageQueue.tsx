@@ -1,6 +1,7 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import type { QueuedMessage } from '../../hooks/useMessageQueue';
 import { useDragSort } from '../settings/hooks/useDragSort';
+import { useDragAutoScroll } from './hooks/useDragAutoScroll.js';
 
 export interface MessageQueueProps {
   /** Queue items */
@@ -32,6 +33,11 @@ export function MessageQueue({ queue, onRemove, onReorder }: MessageQueueProps) 
   // source of truth for rendering because reorder applies synchronously.
   const { draggedId, dragOverId, handlePointerDown } = useDragSort({ items: queue, onSort: handleSort });
 
+  // The list is a fixed-height scroll container; auto-scroll it while dragging
+  // near its edges so rows outside the viewport can be reached.
+  const containerRef = useRef<HTMLDivElement>(null);
+  useDragAutoScroll(containerRef, draggedId !== null);
+
   if (queue.length === 0) {
     return null;
   }
@@ -39,7 +45,7 @@ export function MessageQueue({ queue, onRemove, onReorder }: MessageQueueProps) 
   const canReorder = typeof onReorder === 'function' && queue.length > 1;
 
   return (
-    <div className="message-queue">
+    <div className="message-queue" ref={containerRef}>
       {/* Render in reverse order so newest is at bottom (closest to input) */}
       {[...queue].reverse().map((item, reversedIndex) => {
         // Calculate actual queue position (1-based, from bottom)
