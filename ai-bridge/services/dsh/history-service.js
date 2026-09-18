@@ -9,11 +9,9 @@
 import { connectExisting, runtimeSettingsFromEnv } from './supervisor.js';
 import {
   archiveSession,
-  createWorkspace,
   history,
   listSessions as rpcListSessions,
   sessionIdFromThread,
-  workspaceMembership,
 } from './session.js';
 
 const HISTORY_PAGE_SIZE = 200;
@@ -441,9 +439,12 @@ async function loadHistoryPages(client, sessionId) {
 export async function listSessionsCommand({ cwd }) {
   const settings = runtimeSettingsFromEnv();
   try {
+    // Read-only: listing never binds a Workspace (only a send does), it reports
+    // the sessions that live in this directory. The host's Workspace membership
+    // is a subset of this same rule — it filters out any accounted session whose
+    // canonical cwd differs — while history written before the binding existed
+    // must stay visible here.
     const { client } = await connectExisting(settings);
-    const workspace = await createWorkspace(client, cwd);
-    const membership = workspaceMembership(workspace);
     const items = await rpcListSessions(client);
     const sessions = [];
     for (const item of items) {
@@ -451,15 +452,9 @@ export async function listSessionsCommand({ cwd }) {
       if (!sessionId) {
         continue;
       }
-      if (membership.sessionIds) {
-        if (!membership.sessionIds.has(sessionId) || membership.archivedSessionIds.has(sessionId)) {
-          continue;
-        }
-      } else {
-        const itemCwd = asString(item.cwd);
-        if (!itemCwd || !pathsEqualForWorkspace(itemCwd, cwd)) {
-          continue;
-        }
+      const itemCwd = asString(item.cwd);
+      if (!itemCwd || !pathsEqualForWorkspace(itemCwd, cwd)) {
+        continue;
       }
       if (item.blank === true) {
         continue;
