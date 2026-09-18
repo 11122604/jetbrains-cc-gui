@@ -949,6 +949,8 @@ export interface ChatInputBoxProps {
   messageQueue?: QueuedMessage[];
   /** Remove message from queue callback */
   onRemoveFromQueue?: (id: string) => void;
+  /** Reorder message queue callback (orderedIds[0] executes first) */
+  onReorderQueue?: (orderedIds: string[]) => void;
 
   /** Whether auto open file is enabled */
   autoOpenFileEnabled?: boolean;
