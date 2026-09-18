@@ -1,5 +1,7 @@
 package com.github.claudecodegui.service.commit;
 
+import com.intellij.openapi.application.Application;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vcs.FilePath;
@@ -7,34 +9,21 @@ import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ChangesUtil;
 import com.intellij.openapi.vcs.changes.ContentRevision;
-import com.intellij.openapi.vfs.VirtualFile;
-import git4idea.commands.Git;
-import git4idea.commands.GitCommand;
-import git4idea.commands.GitCommandResult;
-import git4idea.commands.GitLineHandler;
-import git4idea.repo.GitRepository;
-import git4idea.repo.GitRepositoryManager;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * Produces a real, canonical unified {@code git diff} for the user-selected
  * {@link Change}s so the model sees the same diff the user sees in the terminal.
  *
- * <p>Primary path uses git4idea to run {@code git diff HEAD -- <paths>} grouped
- * per repository (one process per repo, not per file — matters on Windows where
- * process spawning is expensive). New (untracked) files are synthesized into a
- * proper unified hunk from their content. If git4idea is unavailable (e.g. the
- * project is null in unit tests, or a file is not under any git repo), it falls
- * back to a content-based diff so the feature degrades gracefully.
+ * <p>Primary path uses the optional {@link GitDiffBackend} (git4idea, registered
+ * only from {@code git-features.xml}) to run {@code git diff HEAD -- <paths>}
+ * grouped per repository. New (untracked) files are synthesized into a proper
+ * unified hunk from their content. If git4idea is unavailable (Git-less IDE,
+ * null project in unit tests, or a file not under any git repo), it falls back
+ * to a content-based diff so the feature degrades gracefully.
  *
  * <p>The content fallback intentionally preserves the legacy line-format so the
  * existing {@code GitCommitMessageServiceCommitAiConfigTest} assertions (which
@@ -65,95 +54,51 @@ public class CommitDiffProvider {
      */
     @NotNull
     public String generate(@NotNull Collection<Change> changes) {
-        if (project == null) {
-            return contentBasedDiff(changes);
+        if (this.project == null) {
+            return this.contentBasedDiff(changes);
         }
-        try {
-            String gitDiff = gitBasedDiff(changes);
-            if (!gitDiff.trim().isEmpty()) {
-                return gitDiff;
+        GitDiffBackend backend = this.findGitBackend();
+        if (backend != null) {
+            try {
+                String gitDiff = backend.diff(this.project, changes);
+                if (gitDiff != null && !gitDiff.trim().isEmpty()) {
+                    return gitDiff;
+                }
+            } catch (RuntimeException t) {
+                this.log.warn("CommitDiffProvider: git4idea diff failed, falling back to content diff: "
+                        + t.getMessage());
             }
-        } catch (Throwable t) {
-            // git4idea is normally present (optional <depends> in plugin.xml; the
-            // Commit AI action only loads with it), but never let diff generation
-            // crash the commit flow.
-            log.warn("CommitDiffProvider: git4idea diff failed, falling back to content diff: " + t.getMessage());
         }
-        return contentBasedDiff(changes);
+        return this.contentBasedDiff(changes);
     }
 
-    // =========================================================================
-    // Primary path: real git diff via git4idea
-    // =========================================================================
-
-    @NotNull
-    private String gitBasedDiff(@NotNull Collection<Change> changes) {
-        GitRepositoryManager mgr = GitRepositoryManager.getInstance(project);
-
-        // Partition: tracked-and-resolvable (grouped by repo) vs new vs unresolved.
-        Map<GitRepository, List<Change>> trackedByRepo = new LinkedHashMap<>();
-        List<Change> newFiles = new ArrayList<>();
-        List<Change> unresolved = new ArrayList<>();
-
-        for (Change change : changes) {
-            Change.Type type = change.getType();
-            if (type == Change.Type.NEW) {
-                newFiles.add(change);
-                continue;
+    /**
+     * Resolve the optional git4idea backend without mentioning its implementation
+     * class. A missing Application or unregistered service means Git4Idea is not
+     * loaded; the content fallback then owns the diff.
+     */
+    @Nullable
+    private GitDiffBackend findGitBackend() {
+        try {
+            Application app = ApplicationManager.getApplication();
+            if (app == null) {
+                return null;
             }
-            FilePath fp = ChangesUtil.getFilePath(change);
-            GitRepository repo = findRepository(mgr, fp);
-            if (repo == null || relativePath(repo, fp) == null) {
-                unresolved.add(change);
-            } else {
-                trackedByRepo.computeIfAbsent(repo, r -> new ArrayList<>()).add(change);
-            }
+            return app.getService(GitDiffBackend.class);
+        } catch (RuntimeException e) {
+            this.log.debug("CommitDiffProvider: Git4Idea backend is unavailable: " + e.getMessage());
+            return null;
         }
-
-        StringBuilder out = new StringBuilder();
-        int omittedFiles = 0;
-
-        // One `git diff HEAD -- <paths>` call per repository.
-        for (Map.Entry<GitRepository, List<Change>> entry : trackedByRepo.entrySet()) {
-            GitRepository repo = entry.getKey();
-            List<Change> repoChanges = entry.getValue();
-            List<String> relPaths = new ArrayList<>(repoChanges.size());
-            for (Change c : repoChanges) {
-                relPaths.add(relativePath(repo, ChangesUtil.getFilePath(c)));
-            }
-            String seg = runGitDiff(repo, relPaths);
-            if (seg.trim().isEmpty()) {
-                // No HEAD yet, or git returned nothing for these paths — degrade
-                // each file to the content fallback rather than dropping it.
-                for (Change c : repoChanges) {
-                    omittedFiles += appendSegment(out, contentDiffForChangeQuiet(c));
-                }
-            } else {
-                omittedFiles += appendSegment(out, capPerFile(seg));
-            }
-        }
-
-        for (Change c : newFiles) {
-            omittedFiles += appendSegment(out, synthesizeNewFile(c));
-        }
-        for (Change c : unresolved) {
-            omittedFiles += appendSegment(out, contentDiffForChangeQuiet(c));
-        }
-
-        if (omittedFiles > 0) {
-            out.append("\n... (")
-                    .append(omittedFiles)
-                    .append(" more file(s) omitted to fit context budget)\n");
-        }
-        return out.toString();
     }
 
     /**
      * Append a segment if it fits the total budget; otherwise count it omitted.
      *
-     * @return 0 if appended, 1 if omitted.
+     * @param out destination buffer
+     * @param segment text to append
+     * @return 0 if appended, 1 if omitted
      */
-    private int appendSegment(@NotNull StringBuilder out, @NotNull String segment) {
+    int appendSegment(@NotNull StringBuilder out, @NotNull String segment) {
         if (segment.isEmpty()) {
             return 0;
         }
@@ -164,78 +109,28 @@ public class CommitDiffProvider {
         return 0;
     }
 
+    /**
+     * Truncate one file's diff to {@link #MAX_PER_FILE_LENGTH}.
+     *
+     * @param segment one file's unified diff
+     * @return the possibly truncated segment
+     */
     @NotNull
-    private String capPerFile(@NotNull String segment) {
+    String capPerFile(@NotNull String segment) {
         if (segment.length() <= MAX_PER_FILE_LENGTH) {
             return segment;
         }
         return segment.substring(0, MAX_PER_FILE_LENGTH) + "\n... (single-file diff truncated)\n";
     }
 
-    @NotNull
-    private String runGitDiff(@NotNull GitRepository repo, @NotNull List<String> relPaths) {
-        try {
-            GitLineHandler handler = new GitLineHandler(project, repo.getRoot(), GitCommand.DIFF);
-            handler.addParameters("--unified=3", "--no-color", "-M", "--no-ext-diff", "HEAD");
-            handler.endOptions();
-            handler.addParameters("--");
-            for (String p : relPaths) {
-                handler.addParameters(p);
-            }
-            GitCommandResult result = Git.getInstance().runCommand(handler);
-            // GitCommandResult.getOutput() returns the stdout lines.
-            String output = String.join("\n", result.getOutput());
-            return output == null ? "" : output;
-        } catch (Throwable t) {
-            log.warn("CommitDiffProvider: git diff command failed: " + t.getMessage());
-            return "";
-        }
-    }
-
-    @Nullable
-    private GitRepository findRepository(@NotNull GitRepositoryManager mgr, @Nullable FilePath fp) {
-        if (fp == null) {
-            return null;
-        }
-        VirtualFile vf = fp.getVirtualFile();
-        if (vf != null) {
-            GitRepository repo = mgr.getRepositoryForFile(vf);
-            if (repo != null) {
-                return repo;
-            }
-        }
-        String abs = fp.getPath();
-        for (GitRepository r : mgr.getRepositories()) {
-            String root = r.getRoot().getPath();
-            if (abs.startsWith(root)) {
-                return r;
-            }
-        }
-        return null;
-    }
-
-    @Nullable
-    private String relativePath(@NotNull GitRepository repo, @Nullable FilePath fp) {
-        if (fp == null) {
-            return null;
-        }
-        try {
-            Path root = Paths.get(repo.getRoot().getPath());
-            Path abs = Paths.get(fp.getPath());
-            if (!abs.startsWith(root)) {
-                return null;
-            }
-            return root.relativize(abs).toString().replace('\\', '/');
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
     /**
      * Synthesize a unified diff for a new (untracked) file from its content.
+     *
+     * @param change a {@link Change.Type#NEW} change
+     * @return a unified hunk, or empty when content cannot be read
      */
     @NotNull
-    private String synthesizeNewFile(@NotNull Change change) {
+    String synthesizeNewFile(@NotNull Change change) {
         FilePath fp = ChangesUtil.getFilePath(change);
         String path = fp == null ? "(unknown)" : fp.getPath();
         String content = null;
@@ -243,12 +138,12 @@ public class CommitDiffProvider {
             ContentRevision after = change.getAfterRevision();
             content = after != null ? after.getContent() : null;
         } catch (VcsException e) {
-            log.warn("CommitDiffProvider: failed to read new file content: " + e.getMessage());
+            this.log.warn("CommitDiffProvider: failed to read new file content: " + e.getMessage());
         }
         if (content == null) {
             return "";
         }
-        String normalized = normalizeLineEndings(content);
+        String normalized = this.normalizeLineEndings(content);
         String[] lines = normalized.isEmpty() ? new String[0] : normalized.split("\n", -1);
         boolean truncated = lines.length > NEW_FILE_LINE_CAP;
         int shown = truncated ? NEW_FILE_LINE_CAP : lines.length;
@@ -278,9 +173,9 @@ public class CommitDiffProvider {
         for (Change change : changes) {
             String segment;
             try {
-                segment = contentDiffForChange(change);
+                segment = this.contentDiffForChange(change);
             } catch (VcsException e) {
-                log.warn("CommitDiffProvider: failed to get diff for change: " + e.getMessage());
+                this.log.warn("CommitDiffProvider: failed to get diff for change: " + e.getMessage());
                 continue;
             }
             if (segment.isEmpty()) {
@@ -295,13 +190,18 @@ public class CommitDiffProvider {
         return diff.toString();
     }
 
-    /** Content fallback for a single change, swallowing VcsException (git path). */
+    /**
+     * Content fallback for a single change, swallowing VcsException (git path).
+     *
+     * @param change one VCS change
+     * @return the legacy content segment, or empty on read failure
+     */
     @NotNull
-    private String contentDiffForChangeQuiet(@NotNull Change change) {
+    String contentDiffForChangeQuiet(@NotNull Change change) {
         try {
-            return contentDiffForChange(change);
+            return this.contentDiffForChange(change);
         } catch (VcsException e) {
-            log.warn("CommitDiffProvider: failed to get diff for change: " + e.getMessage());
+            this.log.warn("CommitDiffProvider: failed to get diff for change: " + e.getMessage());
             return "";
         }
     }
@@ -339,7 +239,7 @@ public class CommitDiffProvider {
             String before = beforeRevision.getContent();
             String after = afterRevision.getContent();
             if (before != null && after != null) {
-                String simpleDiff = generateSimpleDiff(before, after);
+                String simpleDiff = this.generateSimpleDiff(before, after);
                 if (simpleDiff.isEmpty()) {
                     // Pure line-ending change (or no change) — drop this file.
                     return "";
@@ -356,8 +256,8 @@ public class CommitDiffProvider {
      */
     @NotNull
     private String generateSimpleDiff(@NotNull String before, @NotNull String after) {
-        String normalizedBefore = normalizeLineEndings(before);
-        String normalizedAfter = normalizeLineEndings(after);
+        String normalizedBefore = this.normalizeLineEndings(before);
+        String normalizedAfter = this.normalizeLineEndings(after);
         if (normalizedBefore.equals(normalizedAfter)) {
             return "";
         }
