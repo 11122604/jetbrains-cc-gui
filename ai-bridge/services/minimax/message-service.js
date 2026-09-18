@@ -172,9 +172,9 @@ export function parseMiniMaxStreamLine(line) {
           const id = typeof call.id === 'string' ? call.id : '';
           const name = typeof call.name === 'string' && call.name ? call.name : 'tool';
           const toolCall = { id: id || `minimax-tool-${name}`, name, input: parseToolArguments(call.input) };
-          if (call.status === 2) {
+          if (Number(call.status) === 2) {
             events.push({ kind: 'tool_done', call: toolCall, output: extractToolOutputText(call.output) });
-          } else if (call.status === 1) {
+          } else if (Number(call.status) === 1) {
             events.push({ kind: 'tool_start', call: toolCall });
           }
         }
@@ -205,10 +205,10 @@ export function parseMiniMaxStreamLine(line) {
         const id = typeof call.id === 'string' ? call.id : '';
         const name = typeof call.name === 'string' && call.name ? call.name : 'tool';
         const toolCall = { id: id || `minimax-tool-${name}`, name, input: parseToolArguments(call.input) };
-        if (call.status === 2) {
+        if (Number(call.status) === 2) {
           return { kind: 'tool_done', call: toolCall, output: extractToolOutputText(call.output) };
         }
-        if (call.status === 1) {
+        if (Number(call.status) === 1) {
           return { kind: 'tool_start', call: toolCall };
         }
         // 4/5 are queued/running pre-states with no new payload.
@@ -235,6 +235,13 @@ export function parseMiniMaxStreamLine(line) {
       }
       return { kind: 'other' };
     }
+    case 'turn.failed': {
+      // 0.4.x turn failures carry a structured error object; surface it so a
+      // failed turn is not silently swallowed before exec.completed arrives.
+      const errorMessage = extractErrorText(value.error, value.message);
+      if (!errorMessage) return { kind: 'other' };
+      return { kind: 'turn_failed', errorMessage };
+    }
     case 'turn.completed': {
       if (value.usage && typeof value.usage === 'object') {
         return { kind: 'usage', usage: value.usage };
@@ -247,24 +254,26 @@ export function parseMiniMaxStreamLine(line) {
         ? result.sessionId.trim()
         : (typeof value.sessionId === 'string' ? value.sessionId.trim() : '');
       const status = typeof result.status === 'string' ? result.status : '';
+      const answer = typeof result.answer === 'string' ? result.answer : '';
       // Anything other than an explicit success counts as failure: the stream
       // is terminated on this line, so a failed run must not end in silence.
       const failed = status !== '' && status.toLowerCase() !== 'succeeded';
       const errorMessage = failed
         ? extractErrorText(result.error, result.message, value.error, value.message)
         : '';
-      return { kind: 'result', sessionId, status, failed, errorMessage };
+      return { kind: 'result', sessionId, status, failed, errorMessage, answer };
     }
     case 'exec.result': {
       const sessionId = typeof value.sessionId === 'string' ? value.sessionId.trim() : '';
       const status = typeof value.status === 'string' ? value.status : '';
+      const answer = typeof value.answer === 'string' ? value.answer : '';
       const errorMessage = typeof value.error === 'string' && value.error.trim()
         ? value.error.trim()
         : (typeof value.message === 'string' ? value.message.trim() : '');
       // Anything other than an explicit success counts as failure: the stream
       // is terminated on this line, so a failed run must not end in silence.
       const failed = status !== '' && status.toLowerCase() !== 'succeeded';
-      return { kind: 'result', sessionId, status, failed, errorMessage };
+      return { kind: 'result', sessionId, status, failed, errorMessage, answer };
     }
     default:
       return { kind: 'other' };
@@ -350,6 +359,12 @@ export async function sendMessage(
   const seenToolResultIds = new Set();
   const streamedContentMessageIds = new Set();
   const streamedThinkingMessageIds = new Set();
+  // Dedup keys for stream items that carry no id: fall back to one key per
+  // item kind so a completed item without an id still emits its full text once
+  // (and only when no delta for that kind already streamed).
+  const ANON_CONTENT_KEY = '<anon-agent_message>';
+  const ANON_THINKING_KEY = '<anon-reasoning>';
+  let sendErrorEmitted = false;
 
   const handleEvent = (event) => {
     if (!event || typeof event !== 'object') return;
@@ -404,15 +419,26 @@ export async function sendMessage(
         // already streamed so the answer is not duplicated.
         if (!event.content) break;
         if (event.itemType === 'agent_message') {
-          if (event.messageId && !streamedContentMessageIds.has(event.messageId)) {
-            streamedContentMessageIds.add(event.messageId);
+          const key = event.messageId || ANON_CONTENT_KEY;
+          if (!streamedContentMessageIds.has(key)) {
+            streamedContentMessageIds.add(key);
             emitJsonStringMarker('[CONTENT_DELTA]', event.content);
           }
         } else if (event.itemType === 'reasoning') {
-          if (event.messageId && !streamedThinkingMessageIds.has(event.messageId)) {
-            streamedThinkingMessageIds.add(event.messageId);
+          const key = event.messageId || ANON_THINKING_KEY;
+          if (!streamedThinkingMessageIds.has(key)) {
+            streamedThinkingMessageIds.add(key);
             emitJsonStringMarker('[THINKING_DELTA]', event.content);
           }
+        }
+        break;
+      }
+      case 'turn_failed': {
+        // Surface a failed turn immediately; the exec.completed result line
+        // may carry the same failure, so emit only once.
+        if (!sendErrorEmitted) {
+          sendErrorEmitted = true;
+          emitSendError(event.errorMessage, 'MiniMax');
         }
         break;
       }
@@ -420,13 +446,20 @@ export async function sendMessage(
         if (event.sessionId && isNonEmptySessionId(event.sessionId)) {
           emitSessionId(event.sessionId);
         }
+        // Final fallback: if the run produced no streamed content at all but
+        // the result carries a full answer, emit it once.
+        if (event.answer && streamedContentMessageIds.size === 0) {
+          streamedContentMessageIds.add(ANON_CONTENT_KEY);
+          emitJsonStringMarker('[CONTENT_DELTA]', event.answer);
+        }
         // shouldTerminate kills the CLI on this line and suppresses the
         // non-zero exit code, so a failed run with no streamed output would
         // otherwise end the stream in silence — surface it explicitly.
         const nothingStreamed = streamedContentMessageIds.size === 0
           && streamedThinkingMessageIds.size === 0
           && seenToolUseIds.size === 0;
-        if (event.failed && nothingStreamed) {
+        if (event.failed && nothingStreamed && !sendErrorEmitted) {
+          sendErrorEmitted = true;
           emitSendError(
             event.errorMessage || `MiniMax CLI run failed (status: ${event.status})`,
             'MiniMax'
@@ -452,9 +485,9 @@ export async function sendMessage(
         // fallback in handleEvent does not duplicate their text.
         const events = event.kind === 'multi' ? event.events : [event];
         for (const ev of events) {
-          if (!ev || typeof ev !== 'object' || !ev.messageId) continue;
-          if (ev.kind === 'text') streamedContentMessageIds.add(ev.messageId);
-          if (ev.kind === 'thinking') streamedThinkingMessageIds.add(ev.messageId);
+          if (!ev || typeof ev !== 'object') continue;
+          if (ev.kind === 'text') streamedContentMessageIds.add(ev.messageId || ANON_CONTENT_KEY);
+          if (ev.kind === 'thinking') streamedThinkingMessageIds.add(ev.messageId || ANON_THINKING_KEY);
         }
         handleEvent(event);
       },

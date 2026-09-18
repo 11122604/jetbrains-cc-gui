@@ -68,7 +68,7 @@ test('exec.result maps to result event with sessionId', () => {
   });
   assert.deepEqual(parseMiniMaxStreamLine(line), {
     kind: 'result', sessionId: 'mvs_abc123', status: 'succeeded',
-    failed: false, errorMessage: '',
+    failed: false, errorMessage: '', answer: 'done',
   });
 });
 
@@ -78,7 +78,7 @@ test('exec.result with failed status is flagged and carries the error text', () 
   });
   assert.deepEqual(parseMiniMaxStreamLine(line), {
     kind: 'result', sessionId: '', status: 'failed',
-    failed: true, errorMessage: 'permission denied',
+    failed: true, errorMessage: 'permission denied', answer: '',
   });
 });
 
@@ -261,7 +261,7 @@ test('0.4.x exec.completed succeeded maps to result with sessionId', () => {
   });
   assert.deepEqual(parseMiniMaxStreamLine(line), {
     kind: 'result', sessionId: 'mvs_b6eca1d466a04b46932ccf5c5ffcc499',
-    status: 'succeeded', failed: false, errorMessage: '',
+    status: 'succeeded', failed: false, errorMessage: '', answer: '',
   });
 });
 
@@ -284,6 +284,7 @@ test('0.4.x exec.completed failed maps the error object message into result', ()
     kind: 'result', sessionId: 'mvs_0f9a7182ec2148c294f38f6f9b703f23',
     status: 'failed', failed: true,
     errorMessage: 'Model "bogus/nonexistent-model" is not available for the "configured_provider" route (preset cn-prod).',
+    answer: '',
   });
 });
 
@@ -293,4 +294,56 @@ test('0.4.x unknown item types are ignored', () => {
     item: { id: 'x', type: 'file_change', contentDelta: 'patch' },
   });
   assert.deepEqual(parseMiniMaxStreamLine(line), { kind: 'other' });
+});
+
+test('0.4.x turn.failed maps the error object message to a turn_failed event', () => {
+  const line = JSON.stringify({
+    schemaVersion: 1, sequence: 40, type: 'turn.failed', status: 'failed',
+    error: { category: 'runtime', message: 'model overloaded', retryable: true },
+  });
+  assert.deepEqual(parseMiniMaxStreamLine(line), {
+    kind: 'turn_failed', errorMessage: 'model overloaded',
+  });
+});
+
+test('0.4.x turn.failed accepts a plain string error', () => {
+  const line = JSON.stringify({
+    schemaVersion: 1, type: 'turn.failed', error: 'rate limited',
+  });
+  assert.deepEqual(parseMiniMaxStreamLine(line), {
+    kind: 'turn_failed', errorMessage: 'rate limited',
+  });
+});
+
+test('0.4.x turn.failed without any error text is ignored', () => {
+  const line = JSON.stringify({ schemaVersion: 1, type: 'turn.failed', status: 'failed' });
+  assert.deepEqual(parseMiniMaxStreamLine(line), { kind: 'other' });
+});
+
+test('0.4.x item tool_call string statuses "1"/"2" map like numeric ones', () => {
+  const started = JSON.stringify({
+    schemaVersion: 1, type: 'item.updated',
+    item: { id: 'call_1', type: 'tool_call',
+      toolCall: { id: 'call_1', name: 'bash', status: '1', input: {} } },
+  });
+  assert.equal(parseMiniMaxStreamLine(started).kind, 'tool_start');
+  const done = JSON.stringify({
+    schemaVersion: 1, type: 'item.updated',
+    item: { id: 'call_1', type: 'tool_call',
+      toolCall: { id: 'call_1', name: 'bash', status: '2', input: {},
+        output: { content: [{ type: 'text', text: 'ok' }] } } },
+  });
+  const event = parseMiniMaxStreamLine(done);
+  assert.equal(event.kind, 'tool_done');
+  assert.equal(event.output, 'ok');
+});
+
+test('0.4.x exec.completed carries the nested answer text through', () => {
+  const line = JSON.stringify({
+    schemaVersion: 1, type: 'exec.completed', sessionId: 'mvs_a',
+    result: { type: 'exec.result', sessionId: 'mvs_a', status: 'succeeded', answer: 'full answer' },
+  });
+  const event = parseMiniMaxStreamLine(line);
+  assert.equal(event.kind, 'result');
+  assert.equal(event.answer, 'full answer');
 });
