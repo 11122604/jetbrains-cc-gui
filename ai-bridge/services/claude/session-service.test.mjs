@@ -59,11 +59,20 @@ test('persistJsonlMessage and loadSessionHistory keep using a legacy symlink-key
   }
 });
 
-test('buildSessionMessagesPayload returns an empty history when the session file is missing', () => {
+test('buildSessionMessagesPayload reports a missing session file separately from empty history', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-claude-session-'));
   try {
     const missing = path.join(tempDir, 'does-not-exist.jsonl');
     assert.deepEqual(buildSessionMessagesPayload(missing), {
+      success: false,
+      missing: true,
+      error: 'Session history file not found',
+      messages: [],
+    });
+
+    const empty = path.join(tempDir, 'empty.jsonl');
+    fs.writeFileSync(empty, '');
+    assert.deepEqual(buildSessionMessagesPayload(empty), {
       success: true,
       messages: [],
     });

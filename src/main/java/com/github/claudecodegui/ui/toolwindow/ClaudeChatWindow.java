@@ -1520,18 +1520,30 @@ public class ClaudeChatWindow {
             session.setReasoningEffort(savedState.reasoningEffort);
         }
 
-        String restoredSessionId = isNonEmpty(savedState.sessionId) ? savedState.sessionId : null;
-        String restoredCwd = isNonEmpty(savedState.cwd) ? savedState.cwd : session.getCwd();
+        boolean sameProject = TabSessionRestorePolicy.matchesProjectIdentity(
+                savedState,
+                project != null ? project.getBasePath() : null,
+                session.getCwd());
+        String restoredSessionId = sameProject && isNonEmpty(savedState.sessionId)
+                ? savedState.sessionId : null;
+        String restoredCwd = sameProject && isNonEmpty(savedState.cwd)
+                ? savedState.cwd : session.getCwd();
+        if (isNonEmpty(savedState.sessionId) && !sameProject) {
+            LOG.warn("[TabRestore] Ignoring persisted session from another project: savedProject="
+                    + savedState.projectPath + ", currentProject="
+                    + (project != null ? project.getBasePath() : null));
+        }
         session.setSessionInfo(restoredSessionId, restoredCwd);
         persistTabSessionState();
 
         LOG.info("[TabRestore] Restored tab session state: provider=" + savedState.provider
-                + ", sessionId=" + savedState.sessionId + ", cwd=" + savedState.cwd + ")");
+                + ", sessionId=" + restoredSessionId + ", cwd=" + restoredCwd + ")");
     }
 
     public void restorePersistedTabSessionState(TabStateService.TabSessionState savedState, boolean loadImmediately) {
         restorePersistedTabSessionState(savedState);
-        if (TabSessionRestorePolicy.shouldLoadImmediately(savedState, loadImmediately)) {
+        if (session != null && isNonEmpty(session.getSessionId())
+                && TabSessionRestorePolicy.shouldLoadImmediately(savedState, loadImmediately)) {
             loadRestoredHistoryIfNeeded(savedState);
         }
     }
@@ -1547,7 +1559,8 @@ public class ClaudeChatWindow {
     }
 
     private void loadRestoredHistoryIfNeeded(TabStateService.TabSessionState savedState) {
-        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady) || session == null) {
+        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady)
+                || session == null || !isNonEmpty(session.getSessionId())) {
             return;
         }
         if (!restoredHistoryLoadStarted.compareAndSet(false, true)) {
@@ -1557,6 +1570,10 @@ public class ClaudeChatWindow {
         ClaudeSession restoringSession = session;
         restoringSession.loadFromServer().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
             if (!disposed && session == restoringSession) {
+                if (!isNonEmpty(restoringSession.getSessionId())) {
+                    sessionId = resolveExposedSessionId(null, permissionServiceKey);
+                    persistTabSessionState();
+                }
                 callJavaScript("historyLoadComplete",
                         String.valueOf(restoringSession.getMessages().size()));
             }
@@ -2702,6 +2719,8 @@ public class ClaudeChatWindow {
         }
 
         TabStateService.TabSessionState snapshot = new TabStateService.TabSessionState();
+        snapshot.projectPath = TabSessionRestorePolicy.normalizeProjectPath(
+                project.getBasePath());
         snapshot.provider = session.getProvider();
         snapshot.sessionId = session.getSessionId();
         snapshot.cwd = session.getCwd();

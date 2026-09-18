@@ -1,6 +1,7 @@
 package com.github.claudecodegui.session;
 
 import com.github.claudecodegui.permission.PermissionRequest;
+import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Test;
@@ -126,6 +127,35 @@ public class SessionMessageOrchestratorTest {
         assertEquals("The stack trace points to SessionSendService.", state.getMessages().get(1).content);
         assertEquals(1, callback.messageUpdates.size());
         assertTrue(callback.stateChanges.contains("false:false:null"));
+    }
+
+    @Test
+    public void loadFromServerClearsSessionIdWhenHistoryIsMissing() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("expired-session");
+        state.setCwd("/workspace");
+
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        historyAccess.providerHistoryFailure = new SessionHistoryNotFoundException(
+                "expired-session", "/workspace");
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state,
+                new MessageParser(),
+                new SessionCallbackFacade(null),
+                historyAccess,
+                (usedTokens, maxTokens) -> {
+                },
+                0,
+                0
+        );
+
+        orchestrator.loadFromServer().join();
+
+        assertNull(state.getSessionId());
+        assertTrue(state.getMessages().isEmpty());
+        assertFalse(state.isLoading());
+        assertNull(state.getError());
     }
 
     /**
@@ -441,11 +471,15 @@ public class SessionMessageOrchestratorTest {
         private final AtomicInteger providerHistoryRequests = new AtomicInteger();
         private final AtomicInteger latestClaudeUserMessageRequests = new AtomicInteger();
         private List<JsonObject> providerHistory = List.of();
+        private RuntimeException providerHistoryFailure;
         private JsonObject latestClaudeUserMessage;
 
         @Override
         public List<JsonObject> getProviderSessionMessages(String provider, String sessionId, String cwd) {
             providerHistoryRequests.incrementAndGet();
+            if (providerHistoryFailure != null) {
+                throw providerHistoryFailure;
+            }
             return providerHistory;
         }
 
