@@ -81,14 +81,9 @@ export async function bindWorkspaceSession(client, workCwd, incomingSessionId) {
   // Workspace binding — never let the session fall into the host cwd. The host
   // groups by explicit Workspace ownership only, so a cwd-only creation would be
   // filed under "Ungrouped" for good. Creating is idempotent per directory.
-  let workspace;
-  try {
-    workspace = await dshSession.createWorkspace(client, workCwd);
-  } catch (error) {
-    throw new Error(`dsh workspace.create failed: ${error.message}`);
-  }
   let workspaceId;
   try {
+    const workspace = await dshSession.createWorkspace(client, workCwd);
     workspaceId = dshSession.workspaceIdFromCreate(workspace);
   } catch (error) {
     throw new Error(`dsh workspace.create failed: ${error.message}`);

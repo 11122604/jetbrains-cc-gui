@@ -63,28 +63,6 @@ export function workspaceIdFromCreate(value) {
 }
 
 /**
- * Extract the session membership of a workspace.create result.
- * Returns { sessionIds: Set<string>|null, archivedSessionIds: Set<string> }.
- * A null sessionIds set means the host did not report membership (fall back
- * to cwd matching, same as desktop-cc-gui).
- */
-export function workspaceMembership(value) {
-  const workspace = value && value.workspace;
-  if (!workspace || typeof workspace !== 'object') {
-    return { sessionIds: null, archivedSessionIds: new Set() };
-  }
-  const sessionIds = Array.isArray(workspace.sessionIds)
-    ? new Set(workspace.sessionIds.filter((id) => typeof id === 'string'))
-    : null;
-  const archivedSessionIds = new Set(
-    Array.isArray(workspace.archivedSessionIds)
-      ? workspace.archivedSessionIds.filter((id) => typeof id === 'string')
-      : []
-  );
-  return { sessionIds, archivedSessionIds };
-}
-
-/**
  * Create — or idempotently adopt — one session owned by a Workspace.
  *
  * `cwd` is deliberately never sent: a session created from a cwd alone has no

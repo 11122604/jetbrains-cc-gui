@@ -6,6 +6,8 @@
  * Read paths attach to an existing host only (never spawn).
  */
 
+import { realpathSync } from 'node:fs';
+
 import { connectExisting, runtimeSettingsFromEnv } from './supervisor.js';
 import {
   archiveSession,
@@ -390,19 +392,37 @@ function normalizePathForCompare(path) {
   return value;
 }
 
+function realpathOrRaw(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    // Path does not exist or is inaccessible: compare the raw spelling.
+    return path;
+  }
+}
+
 /**
  * Workspace path equality. Exact match first — case-sensitive volumes (APFS
  * can be formatted case-sensitive) must not conflate `Foo/` and `foo/`.
+ *
+ * The host canonicalizes the Workspace path it records as the session cwd
+ * (macOS `/tmp` → `/private/tmp`), while the IDE passes the project directory
+ * as opened, so a symlinked project path only matches after a realpath pass.
  * Case-insensitive compare is only a fallback for win32/darwin default volumes.
  */
-function pathsEqualForWorkspace(a, b) {
+export function pathsEqualForWorkspace(a, b) {
   const na = normalizePathForCompare(a);
   const nb = normalizePathForCompare(b);
   if (na === nb) {
     return true;
   }
+  const ra = normalizePathForCompare(realpathOrRaw(a));
+  const rb = normalizePathForCompare(realpathOrRaw(b));
+  if (ra === rb) {
+    return true;
+  }
   if (process.platform === 'win32' || process.platform === 'darwin') {
-    return na.toLowerCase() === nb.toLowerCase();
+    return na.toLowerCase() === nb.toLowerCase() || ra.toLowerCase() === rb.toLowerCase();
   }
   return false;
 }
