@@ -1324,6 +1324,20 @@ describe('mergeRawBlocksForFinalization', () => {
     }
   });
 
+  it('rejects empty and non-string identities like the Java mirror', () => {
+    // Pinned against MessageStructure.structuralBlockKey: an empty or non-string
+    // identity field yields no key on either side. Exercised through the merge:
+    // an unidentifiable block must NOT survive when the backend omits it.
+    const merged = mergeRawBlocksForFinalization(
+      rawWithBlocks([
+        { type: 'image', src: '' },
+        { type: 'tool_use', id: 123, name: 'Bash' },
+      ]),
+      rawWithBlocks([{ type: 'text', text: 'final' }]),
+    );
+    expect(typesOf(merged)).toEqual(['text']);
+  });
+
   it('keeps a tool_use the backend snapshot dropped, above the final text', () => {
     // The pending snapshot lags: it carries only the trailing text, while the UI
     // already observed the tool call that preceded it. Appending the survivor

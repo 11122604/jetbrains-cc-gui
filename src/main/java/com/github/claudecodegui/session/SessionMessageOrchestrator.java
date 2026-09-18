@@ -269,12 +269,15 @@ public class SessionMessageOrchestrator {
      * Count the live messages a history read can legitimately reproduce.
      *
      * <p>The staleness guard compares the loaded history against the live list, but
-     * the live list also carries locally-synthesized rows that are never persisted:
-     * an ERROR bubble added by a failed turn, and a SYSTEM notice. Counting them
-     * would make the history permanently shorter than the live list, so the guard
-     * would reject every later reload and the failed turn's error bubble would
-     * never clear. A history read can only ever produce user/assistant rows, so
-     * only those are counted.</p>
+     * the live list also carries rows a history read can never reproduce:
+     * locally-synthesized rows (an ERROR bubble added by a failed turn, a SYSTEM
+     * notice) and rows the history parser permanently filters (the
+     * {@code "No response requested."} assistant placeholder, command-tag user
+     * rows — both admitted by the live handlers). Counting any of them would make
+     * the history permanently shorter than the live list, so the guard would
+     * reject every later reload and a failed turn's error bubble would never
+     * clear. Only rows {@link MessageParser#isHistoryReproducible} accepts are
+     * counted.</p>
      *
      * @param messages live transcript
      * @return how many messages a history read could reproduce
@@ -282,8 +285,7 @@ public class SessionMessageOrchestrator {
     private static int countHistoryBackedMessages(List<ClaudeSession.Message> messages) {
         int count = 0;
         for (ClaudeSession.Message message : messages) {
-            if (message.type == ClaudeSession.Message.Type.USER
-                    || message.type == ClaudeSession.Message.Type.ASSISTANT) {
+            if (MessageParser.isHistoryReproducible(message)) {
                 count++;
             }
         }

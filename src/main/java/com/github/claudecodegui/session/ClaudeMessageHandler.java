@@ -681,6 +681,11 @@ public class ClaudeMessageHandler implements MessageCallback {
                 return;
             }
             JsonObject turnUsage = resultJson.getAsJsonObject("usage");
+            // Cheap handler-thread check first: with no live assistant message the
+            // result is discarded anyway, so skip the settings.json disk read too.
+            if (currentAssistantMessage == null || currentAssistantMessage.raw == null) {
+                return;
+            }
             // Resolving the billing model reads ~/.claude/settings.json. Do it
             // before taking the message lock, which the transport snapshot and
             // every EDT reader queue on: a disk read inside it would stall the

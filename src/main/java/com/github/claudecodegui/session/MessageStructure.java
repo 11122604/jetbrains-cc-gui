@@ -56,7 +56,12 @@ final class MessageStructure {
      * @return the identity key, or {@code null}
      */
     static String structuralBlockKey(JsonObject block) {
-        if (block == null || !block.has("type") || block.get("type").isJsonNull()) {
+        // The type guard mirrors messageSync.ts's string comparisons: a
+        // non-string type (missing, null, number, object) yields no key, and
+        // must never throw — structuralBlockKeys walks untrusted history rows.
+        if (block == null || !block.has("type")
+                || !block.get("type").isJsonPrimitive()
+                || !block.getAsJsonPrimitive("type").isString()) {
             return null;
         }
         String type = block.get("type").getAsString();
@@ -70,11 +75,7 @@ final class MessageStructure {
             return primitiveKey(block, "fileName", "attachment");
         }
         if ("image".equals(type)) {
-            String src = primitiveString(block, "src");
-            if (src == null) {
-                return null;
-            }
-            return "image:" + src;
+            return primitiveKey(block, "src", "image");
         }
         return null;
     }
@@ -107,7 +108,10 @@ final class MessageStructure {
     }
 
     private static String primitiveString(JsonObject block, String field) {
-        if (!block.has(field) || !block.get(field).isJsonPrimitive()) {
+        // String primitives only, matching the TS mirror's `typeof === 'string'`:
+        // getAsString() would silently stringify numbers and booleans.
+        if (!block.has(field) || !block.get(field).isJsonPrimitive()
+                || !block.getAsJsonPrimitive(field).isString()) {
             return null;
         }
         return block.get(field).getAsString();

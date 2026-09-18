@@ -58,6 +58,27 @@ public class MessageStructureTest {
     }
 
     @Test
+    public void rejectsNonStringAndEmptyIdentitiesLikeTheTsMirror() {
+        // Pinned against messageSync.ts's structuralBlockKey (`typeof === 'string'`
+        // plus truthiness): both sides must reject these the same way, or the
+        // history guard here and the finalize merge there disagree about the block.
+        assertNull("an empty image src yields no key",
+                MessageStructure.structuralBlockKey(block("type", "image", "src", "")));
+
+        JsonObject numericId = new JsonObject();
+        numericId.addProperty("type", "tool_use");
+        numericId.addProperty("id", 123);
+        assertNull("a numeric id is not an identity",
+                MessageStructure.structuralBlockKey(numericId));
+
+        JsonObject nonStringType = new JsonObject();
+        nonStringType.addProperty("type", 42);
+        nonStringType.addProperty("id", "probe");
+        assertNull("a non-string type must yield no key, not throw",
+                MessageStructure.structuralBlockKey(nonStringType));
+    }
+
+    @Test
     public void ignoresBlocksWithoutIdentityOrStructure() {
         assertNull(MessageStructure.structuralBlockKey(block("type", "text", "text", "hello")));
         assertNull(MessageStructure.structuralBlockKey(block("type", "thinking", "thinking", "hmm")));

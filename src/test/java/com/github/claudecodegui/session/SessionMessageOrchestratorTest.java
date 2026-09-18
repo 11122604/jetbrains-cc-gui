@@ -220,6 +220,40 @@ public class SessionMessageOrchestratorTest {
     }
 
     @Test
+    public void loadFromServerAcceptsHistoryWhenLiveListHasParserFilteredRows() {
+        // The live handlers admit rows the history parser permanently filters —
+        // the "No response requested." assistant placeholder and command-tag user
+        // rows. Counting them as history-backed makes the live list permanently
+        // one longer than any load, so every reload is rejected as stale.
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-with-placeholder");
+        state.setCwd("/workspace");
+        state.addMessage(new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "live prompt"));
+        state.addMessage(new ClaudeSession.Message(
+                ClaudeSession.Message.Type.ASSISTANT, "No response requested.", new JsonObject()));
+
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        historyAccess.providerHistory = List.of(createProviderMessage("user", "live prompt"));
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state,
+                new MessageParser(),
+                new SessionCallbackFacade(null),
+                historyAccess,
+                (usedTokens, maxTokens) -> {
+                },
+                0,
+                0
+        );
+
+        orchestrator.loadFromServer().join();
+
+        // The placeholder row is gone: the load was applied, not rejected as stale.
+        assertEquals(1, state.getMessages().size());
+        assertEquals("live prompt", state.getMessages().get(0).content);
+    }
+
+    @Test
     public void loadFromServerDoesNotShrinkLiveMessagesWhenHistoryLags() {
         SessionState state = new SessionState();
         state.setProvider("claude");

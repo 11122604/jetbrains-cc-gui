@@ -74,6 +74,43 @@ public class SubagentHistoryServiceReadJsonlTest {
     }
 
     @Test
+    public void tornMultibyteUtf8TailIsReportedIncomplete() throws IOException {
+        // A mid-append read whose write boundary splits a multi-byte character:
+        // "中" is E4 B8 85 in UTF-8; the file ends after E4 B8. The lenient
+        // decoder must degrade this to an unparseable last line (torn tail)
+        // instead of throwing UncheckedIOException, which the caller would
+        // surface as an error banner on a healthy subagent.
+        Path file = Files.createTempFile("cc-gui-subagent-", ".jsonl");
+        file.toFile().deleteOnExit();
+        byte[] head = (VALID_USER + "\n{\"type\":\"user\",\"message\":{\"content\":\"中").getBytes(StandardCharsets.UTF_8);
+        // Drop the final byte (0x85), leaving E4 B8 dangling mid-character.
+        byte[] torn = new byte[head.length - 1];
+        System.arraycopy(head, 0, torn, 0, torn.length);
+        Files.write(file, torn);
+
+        try {
+            SubagentHistoryService.readJsonl(file);
+            fail("a mid-character torn tail must be reported incomplete");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("incomplete"));
+        }
+    }
+
+    @Test
+    public void servesPrefixWhenTheTornTailIsStale() throws IOException {
+        // The writer is gone (crashed/killed mid-append): the tail will never
+        // heal, so the parseable prefix is served instead of reporting the
+        // subagent as running forever.
+        Path file = writeTranscript(VALID_USER, TORN_TAIL);
+        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(
+                System.currentTimeMillis() - 60_000));
+
+        JsonArray messages = SubagentHistoryService.readJsonl(file);
+
+        assertEquals(1, messages.size());
+    }
+
+    @Test
     public void ignoresBlankLinesWhenDecidingTheTail() throws IOException {
         // Trailing blank lines are not the last record; a torn tail above them
         // is still a torn tail.

@@ -610,12 +610,17 @@ public class StreamMessageCoalescer {
                             }
                         }
                     }
+                    // The snapshot is delivered from here on. Mark it sent BEFORE the
+                    // usage push: a failure in that foreign HandlerContext code must
+                    // not drop this frame into the catch below, which would park an
+                    // already-delivered snapshot's afterFlush (the stream-end signal)
+                    // and force a needless full re-serialization.
+                    sent = true;
                     String usageJson = MessageJsonConverter.buildUsageUpdateJson(
                             messages, callbackTarget.getHandlerContext());
                     if (usageJson != null) {
                         callbackTarget.callJavaScript("onUsageUpdate", JsUtils.escapeJs(usageJson));
                     }
-                    sent = true;
                 } else {
                     // The destination is unavailable (page not ready) or the bounded
                     // queue rejected the call. Retrying here would re-serialize the
@@ -639,11 +644,13 @@ public class StreamMessageCoalescer {
             // The failure may have happened before the push decision above, so this
             // re-derives staleness rather than reusing `stale`. A live destination
             // parks the snapshot for retry; a dead one only runs the callback.
+            // A snapshot already marked sent was delivered — parking it would
+            // chain its afterFlush into the next build and run it twice.
             boolean abandoned = disposed || callbackTarget.isDisposed()
                     || !isCurrentDeliveryEpoch(snapshotDeliveryEpoch);
             if (abandoned) {
                 stale = true;
-            } else {
+            } else if (!sent) {
                 markSnapshotUndelivered(afterFlush, snapshotDeliveryEpoch);
             }
         }

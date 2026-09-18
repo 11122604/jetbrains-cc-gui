@@ -13,13 +13,15 @@ import com.google.gson.JsonSyntaxException;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.util.concurrency.AppExecutorUtil;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -38,6 +40,13 @@ class SubagentHistoryService {
     private static final Pattern SAFE_REQUEST_ID = Pattern.compile("[A-Za-z0-9_:-]{1,256}");
     private static final Gson GSON = new Gson();
     private static final int MAX_JSONL_LINES = 50_000;
+    /**
+     * How long a torn tail may sit unmodified before the writer is presumed gone.
+     * A live writer completes a mid-append line within milliseconds; a line still
+     * torn after this grace means the process crashed or was killed, and polling
+     * must not report "running" forever.
+     */
+    private static final long TORN_TAIL_GRACE_MS = 10_000;
 
     private final HandlerContext context;
     private final CodexSubagentHistoryLoader codexLoader;
@@ -111,6 +120,7 @@ class SubagentHistoryService {
             // status, which would flash a failure banner on a healthy subagent.
             LOG.debug("[SubagentHistory] Subagent log still being written: " + e.getMessage());
             response.addProperty("success", false);
+            response.addProperty("completed", false);
             response.addProperty("status", "running");
         } catch (Exception e) {
             LOG.warn("[SubagentHistory] Failed to load subagent log: " + e.getMessage());
@@ -441,10 +451,15 @@ class SubagentHistoryService {
         int acceptedLines = 0;
         // Streaming keeps memory flat for large subagent transcripts; every line still
         // participates in the torn-tail check even after the accepted-lines cap.
-        try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
-            Iterator<String> iterator = lines.iterator();
-            while (iterator.hasNext()) {
-                String line = iterator.next();
+        // Decode with REPLACE, not Files.lines' REPORT: a mid-append read whose write
+        // boundary splits a multi-byte UTF-8 character (CJK text, emoji) must degrade
+        // to an unparseable last line — i.e. the torn-tail path below — instead of
+        // throwing UncheckedIOException, which the caller cannot tell from a genuine
+        // read failure and would surface as an error banner on a healthy subagent.
+        // This mirrors the Node bridge, whose utf8 decoding emits U+FFFD.
+        try (BufferedReader reader = newBufferedLenientReader(file)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
                 if (line.isBlank()) {
                     continue;
                 }
@@ -462,10 +477,43 @@ class SubagentHistoryService {
             }
         }
         if (tailMalformed) {
+            // A live writer finishes its mid-append line within milliseconds. If the
+            // file has not changed beyond the grace window, the writer is gone and
+            // the tail will never heal: serve the parseable prefix (the interior
+            // corruption policy) instead of reporting "running" forever.
+            if (isStaleTornTail(file)) {
+                LOG.warn("Serving subagent history with a permanently torn tail (writer inactive): " + file);
+                return messages;
+            }
             throw new TranscriptIncompleteException(
                     "Subagent history is incomplete; retry after the history writer finishes");
         }
         return messages;
+    }
+
+    /**
+     * Open a reader whose UTF-8 decoder replaces malformed input with U+FFFD
+     * instead of throwing.
+     */
+    private static BufferedReader newBufferedLenientReader(Path file) throws IOException {
+        return new BufferedReader(new InputStreamReader(Files.newInputStream(file),
+                StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPLACE)
+                        .onUnmappableCharacter(CodingErrorAction.REPLACE)));
+    }
+
+    /**
+     * Return whether a torn tail has outlived {@link #TORN_TAIL_GRACE_MS}, meaning
+     * the writer is presumed dead. An unreadable timestamp fails safe: keep
+     * reporting the transcript as incomplete.
+     */
+    private static boolean isStaleTornTail(Path file) {
+        try {
+            long ageMs = System.currentTimeMillis() - Files.getLastModifiedTime(file).toMillis();
+            return ageMs > TORN_TAIL_GRACE_MS;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     static boolean hasCompleted(JsonArray messages) {

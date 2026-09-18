@@ -415,6 +415,36 @@ describe('onStreamEnd append guard for a pending backend snapshot', () => {
     expect(harness.getMessages()[0].content).toBe('fresh');
   });
 
+  it('patches the turn-stamped bubble even when its uuid lags the final snapshot', () => {
+    // The backend row's uuid rotates per tool-loop iteration (Java's
+    // MessageMerger copies every top-level field, uuid included, onto the single
+    // live row), and the bubble inherits it from its last APPLIED flush. When the
+    // turn ends right after a tool iteration — instant denial, instant error,
+    // abort — the final flush is still parked in __pendingUpdateJson, so the
+    // bubble carries iteration N's uuid against the snapshot's N+1. That conflict
+    // must not append a second bubble: the __turnId stamp already proves the
+    // bubble belongs to the ended turn.
+    const bubble: ClaudeMessage = {
+      type: 'assistant', content: 'partial', isStreaming: true, __turnId: 1,
+      raw: { uuid: 'iter-1', message: { content: [{ type: 'text', text: 'partial' }] } },
+    } as unknown as ClaudeMessage;
+    harness = createHarness([bubble], 1);
+    harness.refs.isStreamingRef.current = true;
+    harness.refs.streamingMessageIndexRef.current = 0;
+    harness.refs.streamingTurnIdRef.current = 1;
+
+    window.__pendingUpdateJson = JSON.stringify([{
+      type: 'assistant', content: 'final answer',
+      raw: { uuid: 'iter-2', message: { content: [{ type: 'text', text: 'final answer' }] } },
+    }]);
+
+    window.onStreamEnd!('1');
+
+    expect(harness.getMessages()).toHaveLength(1);
+    expect(harness.getMessages()[0].content).toBe('final answer');
+    expect(harness.getMessages()[0].isStreaming).toBe(false);
+  });
+
   it('does not patch a still-streaming assistant with a provably different uuid', () => {
     // A streaming bubble from another turn sits last in the list. The pending
     // snapshot carries a different uuid, so the isStreaming fallback must reject

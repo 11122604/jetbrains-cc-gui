@@ -253,6 +253,34 @@ public class StreamMessageCoalescerStreamEndHookTest {
         }
     }
 
+    @Test
+    public void usagePushFailureAfterAcceptStillRunsTheAfterFlush() {
+        // The snapshot was accepted by the queue; a failure in the trailing usage
+        // push (foreign HandlerContext code, e.g. mid-teardown) must not park the
+        // delivered snapshot's afterFlush — that callback carries the stream-end
+        // signal, and parking it would stall the frontend until the fallback alarm.
+        List<String> callbacks = new ArrayList<>();
+        StreamMessageCoalescer coalescer = new StreamMessageCoalescer(
+                new StreamMessageCoalescer.JsCallbackTarget() {
+                    @Override public boolean callJavaScript(String functionName, String... args) {
+                        return true;
+                    }
+                    @Override public boolean isDisposed() { return false; }
+                    @Override public HandlerContext getHandlerContext() {
+                        throw new IllegalStateException("handler context torn down");
+                    }
+                });
+        try {
+            coalescer.flush(messages(2), sequence -> callbacks.add("after-flush:" + sequence));
+            awaitSnapshotBuildIdle(coalescer);
+
+            assertEquals("afterFlush runs exactly once for the delivered snapshot",
+                    1, callbacks.size());
+        } finally {
+            coalescer.dispose();
+        }
+    }
+
     private static void awaitSnapshotBuildIdle(StreamMessageCoalescer coalescer) {
         long deadline = System.currentTimeMillis() + 5_000L;
         while (coalescer.isSnapshotBuildPending() && System.currentTimeMillis() < deadline) {

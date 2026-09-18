@@ -658,11 +658,24 @@ export function registerStreamingCallbacks(options: UseWindowCallbacksOptions): 
       // streaming assistant. Without this, the final content flush is silently
       // dropped. The re-scan only runs when the primary index is invalid, so the
       // hot path (index still valid) pays no cost.
-      const belongsToEndedTurn = (message: ClaudeMessage | undefined): boolean =>
-        message?.type === 'assistant'
-        && (message.__turnId == null || message.__turnId === endedStreamingTurnId)
-        && (!backendSnapshotAssistant
-          || compareMessageIdentity(message, backendSnapshotAssistant) !== 'conflict');
+      const belongsToEndedTurn = (message: ClaudeMessage | undefined): boolean => {
+        if (message?.type !== 'assistant') return false;
+        if (message.__turnId != null) {
+          if (message.__turnId !== endedStreamingTurnId) return false;
+          // A bubble stamped with the ended turn id IS this turn's bubble. The
+          // backend row's uuid rotates per tool-loop iteration (Java's
+          // MessageMerger copies every top-level field, uuid included, onto the
+          // single live row), and the bubble inherits it from its last APPLIED
+          // flush. When the final flush is still parked in __pendingUpdateJson,
+          // the bubble carries iteration N's uuid against the snapshot's N+1 —
+          // a conflict that proves nothing about turn identity. Rejecting here
+          // would append a second bubble for the same turn.
+          return true;
+        }
+        // No turn stamp: uuid is the only identity evidence available.
+        return !backendSnapshotAssistant
+          || compareMessageIdentity(message, backendSnapshotAssistant) !== 'conflict';
+      };
       let idx = endedStreamingMessageIndex;
       if (!belongsToEndedTurn(prev[idx])
           && endedStreamingTurnId > 0) {
