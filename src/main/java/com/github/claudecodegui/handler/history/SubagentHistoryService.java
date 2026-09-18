@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -103,6 +104,14 @@ class SubagentHistoryService {
             response.addProperty("completed", hasCompleted(messages));
             response.addProperty("status", hasCompleted(messages) ? "completed" : "running");
             response.add("messages", messages);
+        } catch (TranscriptIncompleteException e) {
+            // The last line is still being appended: the subagent is healthy and
+            // the panel's next poll retries. Reported as running with no error —
+            // SubagentProcessError renders any error for Claude regardless of
+            // status, which would flash a failure banner on a healthy subagent.
+            LOG.debug("[SubagentHistory] Subagent log still being written: " + e.getMessage());
+            response.addProperty("success", false);
+            response.addProperty("status", "running");
         } catch (Exception e) {
             LOG.warn("[SubagentHistory] Failed to load subagent log: " + e.getMessage());
             response.addProperty("success", false);
@@ -388,18 +397,73 @@ class SubagentHistoryService {
         return projectKeys().get(0);
     }
 
-    private JsonArray readJsonl(Path file) throws IOException {
+    /**
+     * Signals that a transcript's last line is still being written.
+     *
+     * <p>Distinct from a read failure: the subagent is mid-append, so the caller
+     * reports it as still running and lets the next poll retry, instead of
+     * surfacing an error for a healthy subagent.</p>
+     */
+    static class TranscriptIncompleteException extends IOException {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Creates an exception for a transcript whose writer is mid-append.
+         *
+         * @param message description of the incomplete state
+         */
+        TranscriptIncompleteException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Read a JSONL subagent transcript, skipping interior corruption but refusing
+     * a transcript whose last line is torn.
+     *
+     * <p>Package-private and static so the torn-tail decision is unit-testable
+     * without a HandlerContext.</p>
+     *
+     * @param file transcript to read
+     * @return the parsed records, capped at {@link #MAX_JSONL_LINES}
+     * @throws IOException when the writer is still mid-append
+     */
+    static JsonArray readJsonl(Path file) throws IOException {
         JsonArray messages = new JsonArray();
+        // True while the most recent non-blank line failed to parse. A valid line
+        // clears it, so this ends up describing the LAST non-blank line alone —
+        // which is exactly what a torn tail is: only a malformed final line means
+        // the writer is still mid-append. Interior corruption followed by valid
+        // lines clears the flag and must not block reads forever, since retries
+        // would re-read the same permanently damaged bytes.
+        boolean tailMalformed = false;
+        int acceptedLines = 0;
+        // Streaming keeps memory flat for large subagent transcripts; every line still
+        // participates in the torn-tail check even after the accepted-lines cap.
         try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
-            lines.filter(s -> !s.isBlank())
-                    .limit(MAX_JSONL_LINES)
-                    .forEach(line -> {
-                        try {
-                            messages.add(JsonParser.parseString(line));
-                        } catch (JsonSyntaxException e) {
-                            LOG.warn("Skipping malformed JSONL line in subagent history: " + e.getMessage());
-                        }
-                    });
+            Iterator<String> iterator = lines.iterator();
+            while (iterator.hasNext()) {
+                String line = iterator.next();
+                if (line.isBlank()) {
+                    continue;
+                }
+                try {
+                    JsonElement parsed = JsonParser.parseString(line);
+                    tailMalformed = false;
+                    if (acceptedLines < MAX_JSONL_LINES) {
+                        messages.add(parsed);
+                        acceptedLines++;
+                    }
+                } catch (JsonSyntaxException e) {
+                    tailMalformed = true;
+                    LOG.warn("Malformed JSONL line in subagent history: " + e.getMessage());
+                }
+            }
+        }
+        if (tailMalformed) {
+            throw new TranscriptIncompleteException(
+                    "Subagent history is incomplete; retry after the history writer finishes");
         }
         return messages;
     }

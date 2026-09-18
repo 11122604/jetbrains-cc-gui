@@ -75,9 +75,9 @@ public class ClaudeSession {
         }
 
         public Type type;
-        // Message state is read by callback and UI threads. The coalescer takes a
-        // deep transport snapshot before asynchronous serialization, while volatile
-        // keeps direct readers from observing stale field references.
+        // Provider callbacks and history reloads share SessionState's message lock;
+        // transport snapshots are captured while that lock is held before any async
+        // serialization begins.
         public volatile String content;
         public long timestamp;
         public volatile JsonObject raw; // Raw message data from SDK
@@ -281,6 +281,15 @@ public class ClaudeSession {
 
     public List<Message> getMessages() {
         return state.getMessages();
+    }
+
+    /**
+     * Return a deep snapshot that can safely cross asynchronous transport boundaries.
+     *
+     * @return an independent message snapshot
+     */
+    public List<Message> getMessagesSnapshot() {
+        return state.getMessagesSnapshot();
     }
 
     /**

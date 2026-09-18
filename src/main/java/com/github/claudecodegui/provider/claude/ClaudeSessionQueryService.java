@@ -3,6 +3,7 @@ package com.github.claudecodegui.provider.claude;
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.bridge.ProcessManager;
+import com.github.claudecodegui.provider.common.SessionHistoryIncompleteException;
 import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.util.PlatformUtils;
 import com.github.claudecodegui.util.UserMessageSanitizer;
@@ -81,6 +82,18 @@ class ClaudeSessionQueryService {
                     }
                 }
                 return messages;
+            }
+
+            // The bridge retries a torn JSONL tail in-process before answering
+            // (HISTORY_READ_RETRIES in session-service.js), so an `incomplete`
+            // response means the writer is still appending to a transcript that the
+            // live state already reflects. It is reported as its own exception so
+            // the caller keeps the live transcript instead of surfacing a failure.
+            if (jsonResult.has("incomplete") && jsonResult.get("incomplete").getAsBoolean()) {
+                throw new SessionHistoryIncompleteException(
+                        jsonResult.has("error") && !jsonResult.get("error").isJsonNull()
+                                ? jsonResult.get("error").getAsString()
+                                : "Session history is still being written");
             }
 
             String errorMsg = (jsonResult.has("error") && !jsonResult.get("error").isJsonNull())
