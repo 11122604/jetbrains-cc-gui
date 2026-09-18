@@ -74,8 +74,9 @@ public class CommitDiffProvider {
                 return gitDiff;
             }
         } catch (Throwable t) {
-            // git4idea should always be present (declared as a required <depends>),
-            // but never let diff generation crash the commit flow.
+            // git4idea is normally present (optional <depends> in plugin.xml; the
+            // Commit AI action only loads with it), but never let diff generation
+            // crash the commit flow.
             log.warn("CommitDiffProvider: git4idea diff failed, falling back to content diff: " + t.getMessage());
         }
         return contentBasedDiff(changes);
