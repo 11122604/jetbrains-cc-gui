@@ -95,6 +95,32 @@ export function useCompletionDropdown<T>({
     stateRef.current = state;
   }, [state]);
 
+  // Provider changes invalidate pending searches and the old list. Without this
+  // boundary, switching between Claude and Codex can let an older request win
+  // after the new provider has already rendered.
+  const completionProviderRef = useRef(provider);
+  useEffect(() => {
+    if (completionProviderRef.current === provider) return;
+
+    completionProviderRef.current = provider;
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setState(prev => ({
+      ...prev,
+      isOpen: false,
+      items: [],
+      rawItems: [],
+      sourceRawItems: [],
+      activeIndex: 0,
+      triggerQuery: null,
+      loading: false,
+    }));
+  }, [provider]);
+
   /**
    * Open dropdown
    */
