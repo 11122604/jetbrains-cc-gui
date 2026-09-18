@@ -270,3 +270,104 @@ test('a waterfall without a client id is dropped before prompting', async () => 
     'the permission dialog must not be opened when the answer could not be posted');
   assert.ok(logs.some((line) => line.includes('no clientId')), 'the drop must be logged');
 });
+
+// A reconnect WHILE the dialog sits open mints a new per-generation clientId,
+// and the host rejects an answer quoting the stale one. The id must be read
+// again at answer time — not just before prompting.
+test('a reconnect during the dialog posts the answer with the fresh client id', async () => {
+  const { bridgeModernQuestion } = await import('./events.js');
+
+  const posted = [];
+  const client = {
+    async answerRemoteEvent(...args) {
+      posted.push(args);
+    },
+  };
+  // Generation 1 until the dialog request lands; generation 2 by answer time.
+  let generation = 'client-gen-1';
+  const responder = answerNextDialog(
+    { '你希望怎样确认提交？': '整单拒绝' },
+    () => {
+      generation = 'client-gen-2';
+    },
+  );
+  const ok = await bridgeModernQuestion(
+    client,
+    () => generation,
+    { eventId: 'event-reconnect', request: { questions: QUESTIONS } },
+    () => {},
+  );
+  clearInterval(responder);
+
+  assert.equal(ok, true);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0][0], 'client-gen-2', 'the answer must quote the live generation, not the pre-prompt snapshot');
+});
+
+// Regression: the error fallback posted the raw clientId PARAMETER — a getter
+// function at every real call site — as the answer address.
+test('the question bridge fallback posts an empty batch with the resolved id, not the getter', async () => {
+  const { bridgeModernQuestion } = await import('./events.js');
+
+  const posted = [];
+  let calls = 0;
+  const client = {
+    async answerRemoteEvent(...args) {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('host unreachable');
+      }
+      posted.push(args);
+    },
+  };
+  const responder = answerNextDialog({ '你希望怎样确认提交？': '整单拒绝' });
+  const ok = await bridgeModernQuestion(
+    client,
+    () => 'client-fallback',
+    { eventId: 'event-fallback', request: { questions: QUESTIONS } },
+    () => {},
+  );
+  clearInterval(responder);
+
+  assert.equal(ok, false, 'the primary post failed, so the bridge reports failure');
+  assert.equal(posted.length, 1, 'the fallback must still settle the waterfall');
+  assert.equal(posted[0][0], 'client-fallback', 'the fallback must resolve the getter, not post it');
+  assert.deepEqual(posted[0][2], { answers: [] });
+});
+
+// A host cancel landing inside the wait-for-clientId window must not open a
+// dialog: the answer would be suppressed anyway, so prompting is pure noise.
+test('a waterfall withdrawn during the client id wait never prompts', async () => {
+  const { bridgeModernQuestion } = await import('./events.js');
+
+  const posted = [];
+  const client = {
+    async answerRemoteEvent(...args) {
+      posted.push(args);
+    },
+  };
+  let polls = 0;
+  const clientIdSource = () => {
+    polls += 1;
+    return polls <= 2 ? null : 'client-after-wait';
+  };
+  const withdrawn = () => polls > 2;
+
+  const logs = [];
+  const ok = await bridgeModernQuestion(
+    client,
+    clientIdSource,
+    { eventId: 'event-midwait-cancel', request: { questions: QUESTIONS } },
+    (line) => logs.push(line),
+    withdrawn,
+  );
+
+  assert.equal(ok, false);
+  assert.equal(posted.length, 0);
+  assert.equal(
+    readdirSync(DIR).filter((name) => name.startsWith(`ask-user-question-${SESSION_ID}-`)).length,
+    0,
+    'a waterfall withdrawn during the wait must never open the dialog',
+  );
+  assert.ok(logs.some((line) => line.includes('withdrawn before prompting')));
+});

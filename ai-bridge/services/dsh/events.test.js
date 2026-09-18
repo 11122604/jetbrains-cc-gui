@@ -326,6 +326,22 @@ test('mapQuestionAnswers treats every answer as custom when the question offers 
   );
 });
 
+// A restored dialog draft can disagree with itself: a picked label AND free
+// text on a single-select question. The DSH encoding gives `custom` precedence
+// (it replaces the choice), so `selected` must be emptied even then.
+test('mapQuestionAnswers lets custom win over a picked label on single-select', () => {
+  assert.deepEqual(
+    mapQuestionAnswers(
+      { '你希望怎样确认提交？': ['按阶段批量确认（推荐）', '这个我自己定'] },
+      DSH_QUESTIONS
+    ),
+    [
+      { id: 'commit_cadence', selected: [], custom: '这个我自己定' },
+      { id: 'sibling_fix', selected: [] },
+    ]
+  );
+});
+
 test('mapQuestionAnswers reports skipped questions and an empty cancel', () => {
   assert.deepEqual(
     mapQuestionAnswers({ '你希望怎样确认提交？': '每个任务单独确认' }, DSH_QUESTIONS),

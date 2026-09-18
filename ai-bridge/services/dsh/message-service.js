@@ -372,12 +372,17 @@ function subscribeModernStreams(client, sessionId, turn) {
         // The host withdrew the waterfall: mark it so a late user answer is
         // not posted, and release the drain — the bridge promise keeps
         // running in the background until the Java-side prompt resolves
-        // (there is no IPC to dismiss that dialog from here).
-        turn.withdrawnWaterfalls.add(instruction.eventId);
-        if (turn.waterfallBridges.has(instruction.eventId)) {
-          turn.pendingBridges.delete(turn.waterfallBridges.get(instruction.eventId));
-          turn.waterfallBridges.delete(instruction.eventId);
+        // (there is no IPC to dismiss that dialog from here). Cancel frames
+        // carry no agentId, so ownership cannot be checked directly; gating
+        // on this turn's own offer instead keeps a foreign session's cancel
+        // from poisoning this turn's withdrawn set (and from relying on
+        // host-global eventId uniqueness for correctness).
+        if (!turn.waterfallBridges.has(instruction.eventId)) {
+          return;
         }
+        turn.withdrawnWaterfalls.add(instruction.eventId);
+        turn.pendingBridges.delete(turn.waterfallBridges.get(instruction.eventId));
+        turn.waterfallBridges.delete(instruction.eventId);
         logDebug(`[dsh] waterfall ${instruction.eventId} withdrawn by the host`);
         return;
       }
@@ -397,6 +402,16 @@ function subscribeModernStreams(client, sessionId, turn) {
       turn.lastActivityAt = Date.now();
       switch (instruction.kind) {
         case 'approval-request':
+          // A reconnect can replay a still-pending waterfall into a fresh
+          // generation; without this guard the replay spawns a SECOND dialog
+          // for a request this turn is already prompting for. A replayed frame
+          // for an already-withdrawn waterfall is likewise ignored.
+          if (
+            turn.waterfallBridges.has(instruction.eventId)
+            || turn.withdrawnWaterfalls.has(instruction.eventId)
+          ) {
+            break;
+          }
           turn.waterfallBridges.set(
             instruction.eventId,
             trackBridge(
@@ -416,6 +431,12 @@ function subscribeModernStreams(client, sessionId, turn) {
           );
           break;
         case 'question-request':
+          if (
+            turn.waterfallBridges.has(instruction.eventId)
+            || turn.withdrawnWaterfalls.has(instruction.eventId)
+          ) {
+            break;
+          }
           turn.waterfallBridges.set(
             instruction.eventId,
             trackBridge(

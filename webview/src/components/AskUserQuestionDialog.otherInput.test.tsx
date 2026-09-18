@@ -137,6 +137,20 @@ describe('AskUserQuestionDialog manual answer', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it('clearing the box detaches the "Other" selection again (multi-select)', () => {
+    const { onSubmit } = renderDialog(question(OPTIONS, true));
+
+    fireEvent.change(customBox(), { target: { value: '写了一点' } });
+    expect(otherRow().className).toContain('selected');
+    fireEvent.change(customBox(), { target: { value: '' } });
+
+    // The row must not stay checked over an empty box — that state looked
+    // selected yet satisfied nothing, so Submit stayed disabled.
+    expect(otherRow().className).not.toContain('selected');
+    submit();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('clicking the "Other" row still focuses the input', () => {
     renderDialog(question(OPTIONS));
 

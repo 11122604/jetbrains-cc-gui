@@ -91,6 +91,7 @@ const QuestionSection = ({
           value={customInput}
           onChange={(e) => onCustomInputChange(e.target.value)}
           placeholder={t('askUserQuestion.customInputPlaceholder', '请输入您的答案...')}
+          aria-label={t('askUserQuestion.customInputPlaceholder', '请输入您的答案...')}
           rows={3}
           maxLength={MAX_CUSTOM_INPUT_LENGTH}
         />

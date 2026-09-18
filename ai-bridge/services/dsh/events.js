@@ -716,7 +716,10 @@ function sleep(ms) {
  * generation) can deliver one before it — and an answer posted with a stale or
  * missing id is rejected by the host. Waiting briefly here means a dialog is
  * only ever shown when its answer can actually be posted; the previous
- * behaviour prompted the user and then silently dropped the answer.
+ * behaviour prompted the user and then silently dropped the answer. The id is
+ * re-resolved once more when the user answers: a reconnect during the minutes
+ * a dialog sits open mints a fresh id, so the id is always read as late as
+ * possible.
  *
  * @param {string|Function} source - a client id, or a getter for the live value.
  * @returns {Promise<string|null>} the id, or null when none arrived in time.
@@ -775,6 +778,10 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
     );
     return false;
   }
+  if (isWithdrawn()) {
+    log(`[dsh] approval ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
   try {
     const allowed = await requestPermissionFromJava(toolName, {
       tool: toolName,
@@ -788,7 +795,10 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
     }
     const answered = await answerWaterfall(
       client,
-      resolvedClientId,
+      // Re-resolve at answer time: a reconnect while the dialog was open mints
+      // a new per-generation id, and the host rejects an answer quoting the
+      // stale one. Returns immediately when the id is already present.
+      await resolveClientId(clientId),
       event.eventId,
       allowed ? 'allowed-once' : 'rejected',
       log
@@ -800,7 +810,7 @@ export async function bridgeModernApproval(client, clientId, event, log = () => 
   } catch (error) {
     log(`[dsh] approval answer failed: ${error.message}`);
     try {
-      await answerWaterfall(client, resolvedClientId, event.eventId, 'rejected', log);
+      await answerWaterfall(client, await resolveClientId(clientId), event.eventId, 'rejected', log);
     } catch {
       // Secondary failure: the host keeps the request pending until the turn
       // is aborted — there is no host-side watchdog for a waterfall.
@@ -829,13 +839,17 @@ export async function bridgeModernQuestion(client, clientId, event, log = () => 
     );
     return false;
   }
+  if (isWithdrawn()) {
+    log(`[dsh] question ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
   try {
     const answers = await requestAskUserQuestionAnswers({ questions, provider: 'dsh' });
     if (isWithdrawn()) {
       log(`[dsh] question ${event.eventId} withdrawn; the answer is not posted`);
       return false;
     }
-    const answered = await answerWaterfall(client, resolvedClientId, event.eventId, {
+    const answered = await answerWaterfall(client, await resolveClientId(clientId), event.eventId, {
       answers: mapQuestionAnswers(answers, questions),
     }, log);
     if (answered) {
@@ -845,7 +859,9 @@ export async function bridgeModernQuestion(client, clientId, event, log = () => 
   } catch (error) {
     log(`[dsh] question answer failed: ${error.message}`);
     try {
-      await answerWaterfall(client, clientId, event.eventId, { answers: [] }, log);
+      // Fresh resolution here as well: `clientId` is a live getter, never the
+      // id itself, so posting it raw would send a function as the address.
+      await answerWaterfall(client, await resolveClientId(clientId), event.eventId, { answers: [] }, log);
     } catch {
       // Secondary failure — see bridgeModernApproval.
     }

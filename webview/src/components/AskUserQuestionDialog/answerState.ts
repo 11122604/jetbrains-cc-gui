@@ -68,10 +68,15 @@ export const syncOtherSelection = (
   if (hasText && !markerSelected) {
     return toggleAnswerSelection(prev, questionKey, multiSelect, OTHER_OPTION_MARKER);
   }
-  if (!hasText && markerSelected && !multiSelect) {
-    // Single-select: an "Other" answer without text answers nothing, so the
-    // box being emptied releases the marker. (toggleAnswerSelection only ever
-    // selects on a single-select question, hence the explicit removal here.)
+  if (!hasText && markerSelected) {
+    // An "Other" answer without text answers nothing, so emptying the box
+    // releases the marker in both modes. toggleAnswerSelection only ever
+    // selects on a single-select question, hence the explicit removal there;
+    // multi-select toggles the marker off, so the row does not stay checked
+    // over an empty box (which looked selected yet blocked canProceed).
+    if (multiSelect) {
+      return toggleAnswerSelection(prev, questionKey, true, OTHER_OPTION_MARKER);
+    }
     return { ...prev, [questionKey]: new Set<string>() };
   }
   return prev;
