@@ -27,6 +27,8 @@ vi.mock('./ContentBlockRenderer', () => ({
 
 vi.mock('./ProviderNotConfiguredCard', () => ({
   ProviderNotConfiguredCard: () => <div data-testid="provider-not-configured-card">provider-card</div>,
+}));
+vi.mock('./providerNotConfigured', () => ({
   isProviderNotConfiguredError: () => false,
 }));
 
@@ -86,6 +88,37 @@ function renderMessageItem(message: ClaudeMessage, options: { detailedOutputEnab
     />
   );
 }
+
+describe('MessageItem user image layout', () => {
+  it('marks image-only user messages for compact bubble layout', () => {
+    const message: ClaudeMessage = {
+      type: 'user',
+      raw: {
+        content: [{ type: 'image', src: 'data:image/png;base64,test' }],
+      } as any,
+    };
+
+    const { container } = renderMessageItem(message);
+
+    expect(container.querySelector('.message-content')?.classList.contains('image-only')).toBe(true);
+  });
+
+  it('keeps the normal bubble layout when a user image has visible text', () => {
+    const message: ClaudeMessage = {
+      type: 'user',
+      raw: {
+        content: [
+          { type: 'image', src: 'data:image/png;base64,test' },
+          { type: 'text', text: '你好' },
+        ],
+      } as any,
+    };
+
+    const { container } = renderMessageItem(message);
+
+    expect(container.querySelector('.message-content')?.classList.contains('image-only')).toBe(false);
+  });
+});
 
 describe('MessageItem copy button visibility', () => {
   it('hides the assistant copy button for tool-only messages', () => {

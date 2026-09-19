@@ -4,13 +4,14 @@ import { toFiniteNumber } from "../../../lib/format";
 import { useTokenFormat } from "../../../hooks/useTokenFormat.js";
 import { ProviderIcon } from "./ProviderIcon";
 import { ProjectDetailModal } from "./ProjectDetailModal.jsx";
-import {
-  ProjectAvatar,
-  githubOwnerFor,
-  splitProjectKey,
-} from "./project-usage-utils.jsx";
+import { ProjectAvatar } from "./project-usage-utils.jsx";
+import { githubOwnerFor, splitProjectKey } from "./projectForgeUtils.js";
 
 const PROJECT_SOURCE_ICON_LIMIT = 5;
+
+// Hoisted so destructuring defaults don't create a fresh reference per render.
+const EMPTY_LIST = [];
+const EMPTY_QUERY = {};
 
 function ProjectRow({ entry, maxTokens, copy, formatTokens, formatTokensTooltip, onSelect }) {
   const projectKey = typeof entry?.project_key === "string" ? entry.project_key : "";
@@ -85,12 +86,12 @@ function ProjectRow({ entry, maxTokens, copy, formatTokens, formatTokensTooltip,
 
 export function DataDetails({
   // Project props
-  projectEntries = [],
+  projectEntries = EMPTY_LIST,
   projectLimit = 3,
   onProjectLimitChange,
   // { from, to, timeZone, tzOffsetMinutes } — forwarded to the per-project
   // drill-down modal so it queries the same range the panel shows.
-  projectDetailQuery = {},
+  projectDetailQuery = EMPTY_QUERY,
   // Daily breakdown props
   copy,
   hasDetailsActual,
@@ -102,8 +103,8 @@ export function DataDetails({
   toggleSort,
   sortIconFor,
   pagedDetails,
-  dailyBreakdownRows = [],
-  dailyBreakdownColumns = [],
+  dailyBreakdownRows = EMPTY_LIST,
+  dailyBreakdownColumns = EMPTY_LIST,
   dailyBreakdownAriaSortFor,
   dailyBreakdownSortIconFor,
   dailyBreakdownDateKey = "day",
@@ -185,9 +186,9 @@ export function DataDetails({
         }, 0);
         return (
           <div className="space-y-1">
-            {visibleEntries.map((entry, idx) => (
+            {visibleEntries.map((entry) => (
               <ProjectRow
-                key={entry?.project_key || entry?.project_ref || `entry-${idx}`}
+                key={entry?.project_key || entry?.project_ref || entry?.project_name}
                 entry={entry}
                 maxTokens={maxTokens}
                 copy={copy}

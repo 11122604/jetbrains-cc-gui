@@ -40,8 +40,8 @@ let codexSdk = null;
 //   [ENHANCED_ERROR]<msg>          — final failure
 
 /** Mirrors chat AVAILABLE_PROVIDERS / webview AiFeatureProvider. */
-const AI_FEATURE_PROVIDERS = ['claude', 'codex', 'grok', 'kimi', 'opencode', 'pi', 'omp'];
-const CLI_ONLY_PROVIDERS = new Set(['grok', 'kimi', 'opencode', 'pi', 'omp']);
+const AI_FEATURE_PROVIDERS = ['claude', 'codex', 'grok', 'kimi', 'opencode', 'pi', 'omp', 'minimax'];
+const CLI_ONLY_PROVIDERS = new Set(['grok', 'kimi', 'opencode', 'pi', 'omp', 'minimax']);
 
 const DEFAULT_PROMPT_ENHANCER_CONFIG = {
   provider: null,
@@ -56,6 +56,7 @@ const DEFAULT_PROMPT_ENHANCER_CONFIG = {
     opencode: 'opencode-default',
     pi: 'auto',
     omp: 'auto',
+    minimax: 'auto',
   },
   availability: {
     claude: false,
@@ -65,6 +66,7 @@ const DEFAULT_PROMPT_ENHANCER_CONFIG = {
     opencode: false,
     pi: false,
     omp: false,
+    minimax: false,
   },
 };
 
@@ -420,6 +422,25 @@ export function emitContentDelta(text) {
 }
 
 /**
+ * Build the messages.stream() request for the Claude ask path.
+ * thinking is disabled so reasoning models (e.g. DeepSeek via relay) do not
+ * spend the token budget on `thinking` blocks and leave the text empty.
+ * Exposed for tests.
+ */
+export function buildEnhanceAskRequest(modelId, fullPrompt, systemPrompt, maxTokens) {
+  const request = {
+    model: modelId,
+    max_tokens: maxTokens,
+    thinking: { type: 'disabled' },
+    messages: [{ role: 'user', content: fullPrompt }],
+  };
+  if (systemPrompt && String(systemPrompt).trim()) {
+    request.system = String(systemPrompt).trim();
+  }
+  return request;
+}
+
+/**
  * Fast Claude path: Anthropic SDK messages.stream (no Agent SDK cold start).
  * Native SSE token streaming via .on('text').
  */
@@ -444,7 +465,14 @@ async function enhancePromptWithClaudeAsk(originalPrompt, systemPrompt, model, c
 
   const clientOpts = {
     baseURL: config.baseUrl || undefined,
-    defaultHeaders: { 'x-app': 'cli', 'User-Agent': getCliUserAgent() },
+    // Some relays (e.g. OpenCode Go reached through a local proxy) route requests by
+    // session and answer 400 MissingSessionID without a session header. This call has no
+    // real session to forward, and the value only has to be non-empty to satisfy them.
+    defaultHeaders: {
+      'x-app': 'cli',
+      'User-Agent': getCliUserAgent(),
+      'x-opencode-session': 'ccgui-prompt-enhancer',
+    },
   };
   if (config.authType === 'auth_token') {
     clientOpts.authToken = config.apiKey;
@@ -454,34 +482,22 @@ async function enhancePromptWithClaudeAsk(originalPrompt, systemPrompt, model, c
   }
   const client = new Anthropic(clientOpts);
 
-  console.log('[PromptEnhancer] Streaming via Anthropic SDK messages.stream()...');
+  console.log('[PromptEnhancer] Streaming via Anthropic SDK messages.create({stream: true})...');
 
   let streamedText = '';
-  const request = {
-    model: modelId,
-    max_tokens: maxTokens,
-    messages: [{ role: 'user', content: fullPrompt }],
-  };
-  if (systemPrompt && String(systemPrompt).trim()) {
-    request.system = String(systemPrompt).trim();
-  }
-
-  const stream = client.messages.stream(request);
-  stream.on('text', (text) => {
-    if (text) {
-      emitContentDelta(text);
-      streamedText += text;
-    }
+  // Not messages.stream(): its message accumulator assumes the official SSE shape and
+  // throws "Cannot read properties of undefined (reading 'push')" when an upstream omits
+  // `content` from message_start (observed on OpenCode Go behind a local proxy). Iterating
+  // the raw events only needs the deltas we care about, and ignores thinking blocks.
+  const stream = await client.messages.create({
+    ...buildEnhanceAskRequest(modelId, fullPrompt, systemPrompt, maxTokens),
+    stream: true,
   });
 
-  const finalMessage = await stream.finalMessage();
-
-  if (!streamedText.trim() && finalMessage && Array.isArray(finalMessage.content)) {
-    for (const block of finalMessage.content) {
-      if (block && block.type === 'text' && block.text) {
-        emitContentDelta(block.text);
-        streamedText += block.text;
-      }
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta' && event.delta && event.delta.type === 'text_delta' && event.delta.text) {
+      emitContentDelta(event.delta.text);
+      streamedText += event.delta.text;
     }
   }
 

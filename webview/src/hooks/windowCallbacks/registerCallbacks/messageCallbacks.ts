@@ -518,7 +518,14 @@ export function registerMessageCallbacks(
           ? Math.max(0, storedBaseIndex)
           : 0;
         const backendMessageCount = prev.length - prependedCount;
+        // A tail cannot bridge a missing prefix in an existing full transcript.
+        // Retain it until a complete snapshot arrives; empty pages can start a window.
         const hasFullPrefix = currentBaseIndex === 0 && baseIndex <= backendMessageCount;
+        const startsTailWindow = baseIndex > 0
+          && (currentBaseIndex > 0 || prev.length === 0);
+        if (!hasFullPrefix && !startsTailWindow && baseIndex > 0) {
+          return prev;
+        }
         let merged = hasFullPrefix
           ? [...prev.slice(0, prependedCount + baseIndex), ...tail]
           : [...prependedHistory, ...tail];
@@ -727,10 +734,13 @@ export function registerMessageCallbacks(
         if (message.type !== 'user') continue;
         if (getRawUuid(message)) continue;
 
-        const rawText = extractRawBlocks(message.raw)
-          .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-          .map((block) => String(block.text))
-          .join('\n');
+        const rawTextParts: string[] = [];
+        for (const block of extractRawBlocks(message.raw)) {
+          if (block?.type === 'text' && typeof block.text === 'string') {
+            rawTextParts.push(String(block.text));
+          }
+        }
+        const rawText = rawTextParts.join('\n');
         if ((message.content || '') !== content && rawText !== content) continue;
 
         const raw: ClaudeMessage['raw'] =

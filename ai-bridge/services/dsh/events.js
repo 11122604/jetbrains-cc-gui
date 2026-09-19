@@ -284,6 +284,45 @@ function projectSessionProjection(frame) {
 }
 
 /**
+ * Project one process-local assistant frame from a modern `session/follow`
+ * stream (`{type:'assistant-stream', frame}`). Only `chunk` carries payload;
+ * `start`/`end` are lifecycle bookends the marker protocol has no use for.
+ */
+export function projectAssistantStreamFrame(frame) {
+  if (!frame || typeof frame !== 'object') {
+    return [];
+  }
+  switch (asString(frame.type)) {
+    case 'chunk':
+      return projectStreamChunk({ chunk: frame.chunk });
+    default:
+      return [];
+  }
+}
+
+/**
+ * Project one `session/follow` frame (modern host) into turn events.
+ * Durable events carry the same `{type, data}` envelope the legacy mux emitted,
+ * so `projectSessionEvent` is reused as-is; the opening `snapshot` is skipped
+ * on purpose — it replays history the plugin loads through its own reader, and
+ * re-emitting it would duplicate the transcript.
+ */
+export function projectFollowFrame(value) {
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+  switch (asString(value.type)) {
+    case 'event':
+      return projectSessionEvent(value.event);
+    case 'assistant-stream':
+      return projectAssistantStreamFrame(value.frame);
+    case 'snapshot':
+    default:
+      return [];
+  }
+}
+
+/**
  * Project one mux frame into turn events.
  * frameType: frame.type (e.g. "session/event" / "approval/requested").
  */
@@ -336,6 +375,107 @@ export function projectMuxFrame(frameType, frame, rpcId) {
     default:
       return [];
   }
+}
+
+/**
+ * Project one `$events` frame (modern host) into a bridge instruction.
+ *
+ * The modern host forwards only a small allowlist of Cordis events, and the
+ * two that need an answer arrive as waterfalls carrying their own `eventId`;
+ * the reply must also quote the `clientId` learned from the opening `ready`
+ * frame, which is regenerated on every reconnect.
+ *
+ * @returns {{kind:'ready',clientId:string}
+ *   | {kind:'approval-request',eventId:string,request:object}
+ *   | {kind:'question-request',eventId:string,request:object}
+ *   | {kind:'cancel',eventId:string}
+ *   | null}
+ */
+export function projectRemoteEventFrame(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  switch (asString(value.type)) {
+    case 'ready': {
+      const clientId = asString(value.clientId);
+      return clientId ? { kind: 'ready', clientId } : null;
+    }
+    case 'waterfall': {
+      const eventId = asString(value.eventId);
+      if (!eventId) {
+        return null;
+      }
+      const request = value.request && typeof value.request === 'object' ? value.request : {};
+      const event = asString(value.event);
+      // The host scopes a forwarded waterfall to the Agent that raised it, and a
+      // DSH agent id IS its session id (host: "agent and its session share one
+      // id, 1:1, same axis"), so the frame names the session it belongs to.
+      const agentId = asString(value.agentId);
+      if (event === 'approval/request') {
+        return { kind: 'approval-request', eventId, agentId, request };
+      }
+      if (event === 'user-questions/request') {
+        return { kind: 'question-request', eventId, agentId, request };
+      }
+      return null;
+    }
+    case 'cancel': {
+      const eventId = asString(value.eventId);
+      return eventId ? { kind: 'cancel', eventId } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether a forwarded `$events` waterfall belongs to the session this bridge is
+ * serving.
+ *
+ * The host broadcasts every forwarded waterfall to every `$events` client, so a
+ * turn that answers whatever arrives pops someone else's dialog: a question —
+ * or an approval — raised by another IDE tab, or by the user's own `dsh web`
+ * session, would land in this window, and whoever answers first settles the
+ * waterfall for everyone. The frame's `agentId` is the raising Agent's id,
+ * which is the session id, so ownership is a plain id comparison.
+ *
+ * A frame without `agentId` (older host) is accepted, as before.
+ *
+ * @param {string} agentId - session an incoming waterfall belongs to.
+ * @param {string} sessionId - session this turn is serving.
+ * @returns {boolean} whether this turn may answer it.
+ */
+export function waterfallBelongsToSession(agentId, sessionId) {
+  const owner = asString(agentId);
+  if (!owner) {
+    return true;
+  }
+  return owner === asString(sessionId);
+}
+
+/** Tool name of an `approval/request` waterfall payload. */
+function approvalToolName(request) {
+  return asString(request && request.toolName) || 'dsh-tool';
+}
+
+/** Reason / summary of an `approval/request` waterfall payload. */
+function approvalReason(request) {
+  const explicit = asString(request && request.reason);
+  if (explicit) {
+    return explicit;
+  }
+  return asString(request && request.policy);
+}
+
+/** Question rows of a `user-questions/request` waterfall payload. */
+function questionRows(request) {
+  if (!request || typeof request !== 'object') {
+    return [];
+  }
+  if (Array.isArray(request.questions)) {
+    return request.questions;
+  }
+  return [];
 }
 
 /**
@@ -434,10 +574,13 @@ export async function bridgeDshApproval(client, event, sessionId, log = () => {}
  */
 export async function bridgeDshQuestion(client, event, sessionId, log = () => {}) {
   try {
-    const answers = await requestAskUserQuestionAnswers({ questions: event.questions });
+    const answers = await requestAskUserQuestionAnswers({
+      questions: event.questions,
+      provider: 'dsh',
+    });
     await client.respond(event.rpcId, {
       sessionId,
-      answer: { answers: mapQuestionAnswers(answers) },
+      answer: { answers: mapQuestionAnswers(answers, event.questions) },
     });
     log('[dsh] question answered');
     return true;
@@ -456,21 +599,274 @@ export async function bridgeDshQuestion(client, event, sessionId, log = () => {}
   }
 }
 
-function mapQuestionAnswers(answers) {
+/** Normalize one question's dialog answer (string | string[]) into labels. */
+function answerLabels(value) {
+  if (Array.isArray(value)) {
+    return value.filter((entry) => typeof entry === 'string' && entry.trim() !== '');
+  }
+  if (value && typeof value === 'object' && Array.isArray(value.answers)) {
+    return value.answers.filter((entry) => typeof entry === 'string' && entry.trim() !== '');
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    return [value];
+  }
+  return [];
+}
+
+/** Declared option labels of one question, used to tell choices from free text. */
+function optionLabelsOf(question) {
+  const options = question && Array.isArray(question.options) ? question.options : [];
+  const labels = new Set();
+  for (const option of options) {
+    if (option && typeof option.label === 'string' && option.label !== '') {
+      labels.add(option.label);
+    }
+  }
+  return labels;
+}
+
+/**
+ * Translate the plugin dialog's answer object into DSH's
+ * `AskUserQuestionAnswer` — `{answers:[{id, selected, custom?}]}`.
+ *
+ * The dialog is shared with Claude, which matches AskUserQuestion answers by
+ * question TEXT, so it keys its answer object by the question text and folds a
+ * typed "Other" answer into the label list
+ * (`webview/src/components/AskUserQuestionDialog/answerState.ts`).
+ *
+ * DSH is not Claude: `AskUserQuestionItem.id` is a caller-declared id "echoed
+ * in the answer", and free text travels in `custom` — for a single-select
+ * question a custom answer replaces the choice, so `selected` must then be
+ * empty. Forwarding the dialog's text keys verbatim meant the asking model got
+ * answers under ids it never issued: it could not tell which answer belonged to
+ * which question, so the answer read as "no valid reply" and users fell back to
+ * answering in the DSH Web UI.
+ *
+ * Questions the dialog left unanswered are reported as `{id, selected: []}`,
+ * mirroring the shipped Web client, so a multi-question batch stays complete.
+ *
+ * @param {object|null} answers - dialog answer object, keyed by question text.
+ * @param {Array} [questions] - the `user-questions/request` rows that were asked.
+ * @returns {Array<{id:string, selected:string[], custom?:string}>}
+ */
+export function mapQuestionAnswers(answers, questions) {
   if (!answers || typeof answers !== 'object') {
     return [];
   }
-  return Object.entries(answers).map(([id, value]) => {
-    let selected = [];
-    if (value && typeof value === 'object' && Array.isArray(value.answers)) {
-      selected = value.answers;
-    } else if (Array.isArray(value)) {
-      selected = value;
-    } else if (typeof value === 'string') {
-      selected = [value];
+  const entries = Object.entries(answers);
+  if (entries.length === 0) {
+    // Cancelled dialog: the host must see "no answers" — a batch of skipped
+    // items would instead read as "every question was declined".
+    return [];
+  }
+  const rows = Array.isArray(questions) ? questions : [];
+  const byText = new Map(entries);
+  const lookup = (text) => (byText.has(text) ? byText.get(text) : byText.get(text.trim()));
+
+  const mapped = [];
+  let matched = 0;
+  for (const question of rows) {
+    const id = asString(question && question.id);
+    const text = asString(question && question.question);
+    if (!id || !text) {
+      continue;
     }
-    return { id, selected };
+    if (!byText.has(text) && !byText.has(text.trim())) {
+      mapped.push({ id, selected: [] });
+      continue;
+    }
+    matched += 1;
+    const labels = answerLabels(lookup(text));
+    const optionLabels = optionLabelsOf(question);
+    const selected = labels.filter((label) => optionLabels.has(label));
+    // A label the question never offered is the dialog's "Other" free text.
+    const custom = labels.filter((label) => !optionLabels.has(label)).join('\n').trim();
+    const multiSelect = question.multiSelect === true;
+    const item = { id, selected: custom && !multiSelect ? [] : selected };
+    if (custom) {
+      item.custom = custom;
+    }
+    mapped.push(item);
+  }
+  if (matched === 0) {
+    // Nothing matched the question rows (legacy host, or a non-DSH shape):
+    // deliver the dialog's own keys rather than dropping the answer.
+    return entries.map(([id, value]) => ({ id, selected: answerLabels(value) }));
+  }
+  return mapped;
+}
+
+/** How long a waterfall may wait for the `$events` stream's per-generation id. */
+const CLIENT_ID_WAIT_MS = 3_000;
+const CLIENT_ID_POLL_MS = 50;
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
+}
+
+/**
+ * Resolve the per-generation `$events` client id that a waterfall answer must
+ * quote.
+ *
+ * The host routes an answer by `clientId` + `eventId`, and `clientId` is minted
+ * per stream generation by the opening `ready` frame. A waterfall normally
+ * arrives after that frame, but a reconnect (or a request replayed into a fresh
+ * generation) can deliver one before it — and an answer posted with a stale or
+ * missing id is rejected by the host. Waiting briefly here means a dialog is
+ * only ever shown when its answer can actually be posted; the previous
+ * behaviour prompted the user and then silently dropped the answer. The id is
+ * re-resolved once more when the user answers: a reconnect during the minutes
+ * a dialog sits open mints a fresh id, so the id is always read as late as
+ * possible.
+ *
+ * @param {string|Function} source - a client id, or a getter for the live value.
+ * @returns {Promise<string|null>} the id, or null when none arrived in time.
+ */
+async function resolveClientId(source) {
+  const read = typeof source === 'function' ? source : () => source;
+  const deadline = Date.now() + CLIENT_ID_WAIT_MS;
+  for (;;) {
+    const value = read();
+    if (typeof value === 'string' && value) {
+      return value;
+    }
+    if (Date.now() >= deadline) {
+      return null;
+    }
+    await sleep(CLIENT_ID_POLL_MS);
+  }
+}
+
+/**
+ * Settle one modern waterfall frame. `$events/result` accepts only
+ * `{kind, value?}` — a stray key makes the whole answer invalid, which tears
+ * down the host's event generation instead of merely failing the request.
+ */
+async function answerWaterfall(client, clientId, eventId, value, log) {
+  if (!clientId) {
+    log('[dsh] dropping a waterfall answer: the $events stream reported no clientId');
+    return false;
+  }
+  await client.answerRemoteEvent(clientId, eventId, value);
+  return true;
+}
+
+/**
+ * Settle a modern `approval/request` waterfall. The decision is the bare
+ * `ApprovalOutcome` string — `'allowed-once'` is the only granting value.
+ *
+ * `isWithdrawn` reports a host-side `cancel` for this eventId: a withdrawn
+ * waterfall must neither prompt the user nor be answered, because the host's
+ * event generation that would consume the answer is already gone.
+ *
+ * @param {string|Function} clientId - id, or getter for the live `$events` id.
+ */
+export async function bridgeModernApproval(client, clientId, event, log = () => {}, isWithdrawn = () => false) {
+  const request = event && event.request && typeof event.request === 'object' ? event.request : {};
+  const toolName = approvalToolName(request);
+  if (isWithdrawn()) {
+    log(`[dsh] approval ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
+  const resolvedClientId = await resolveClientId(clientId);
+  if (!resolvedClientId) {
+    log(
+      `[dsh] approval ${event.eventId} dropped: the $events stream reported no clientId `
+      + `within ${CLIENT_ID_WAIT_MS}ms, so the answer could not be posted`
+    );
+    return false;
+  }
+  if (isWithdrawn()) {
+    log(`[dsh] approval ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
+  try {
+    const allowed = await requestPermissionFromJava(toolName, {
+      tool: toolName,
+      reason: approvalReason(request) || undefined,
+      approvalId: event.eventId,
+      input: request,
+    });
+    if (isWithdrawn()) {
+      log(`[dsh] approval ${event.eventId} withdrawn; the answer is not posted`);
+      return false;
+    }
+    const answered = await answerWaterfall(
+      client,
+      // Re-resolve at answer time: a reconnect while the dialog was open mints
+      // a new per-generation id, and the host rejects an answer quoting the
+      // stale one. Returns immediately when the id is already present.
+      await resolveClientId(clientId),
+      event.eventId,
+      allowed ? 'allowed-once' : 'rejected',
+      log
+    );
+    if (answered) {
+      log(`[dsh] approval ${event.eventId} ${allowed ? 'allowed-once' : 'rejected'}`);
+    }
+    return answered;
+  } catch (error) {
+    log(`[dsh] approval answer failed: ${error.message}`);
+    try {
+      await answerWaterfall(client, await resolveClientId(clientId), event.eventId, 'rejected', log);
+    } catch {
+      // Secondary failure: the host keeps the request pending until the turn
+      // is aborted — there is no host-side watchdog for a waterfall.
+    }
+    return false;
+  }
+}
+
+/**
+ * Settle a modern `user-questions/request` waterfall with the
+ * `{answers:[{id, selected, custom?}]}` shape the asker's output schema requires.
+ *
+ * @param {string|Function} clientId - id, or getter for the live `$events` id.
+ */
+export async function bridgeModernQuestion(client, clientId, event, log = () => {}, isWithdrawn = () => false) {
+  const questions = questionRows(event && event.request);
+  if (isWithdrawn()) {
+    log(`[dsh] question ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
+  const resolvedClientId = await resolveClientId(clientId);
+  if (!resolvedClientId) {
+    log(
+      `[dsh] question ${event.eventId} dropped: the $events stream reported no clientId `
+      + `within ${CLIENT_ID_WAIT_MS}ms, so the answer could not be posted`
+    );
+    return false;
+  }
+  if (isWithdrawn()) {
+    log(`[dsh] question ${event.eventId} withdrawn before prompting`);
+    return false;
+  }
+  try {
+    const answers = await requestAskUserQuestionAnswers({ questions, provider: 'dsh' });
+    if (isWithdrawn()) {
+      log(`[dsh] question ${event.eventId} withdrawn; the answer is not posted`);
+      return false;
+    }
+    const answered = await answerWaterfall(client, await resolveClientId(clientId), event.eventId, {
+      answers: mapQuestionAnswers(answers, questions),
+    }, log);
+    if (answered) {
+      log('[dsh] question answered');
+    }
+    return answered;
+  } catch (error) {
+    log(`[dsh] question answer failed: ${error.message}`);
+    try {
+      // Fresh resolution here as well: `clientId` is a live getter, never the
+      // id itself, so posting it raw would send a function as the address.
+      await answerWaterfall(client, await resolveClientId(clientId), event.eventId, { answers: [] }, log);
+    } catch {
+      // Secondary failure — see bridgeModernApproval.
+    }
+    return false;
+  }
 }
 
 /**

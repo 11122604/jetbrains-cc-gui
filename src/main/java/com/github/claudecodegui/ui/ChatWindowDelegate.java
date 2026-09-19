@@ -48,7 +48,6 @@ import com.github.claudecodegui.provider.common.SDKResult;
 import com.github.claudecodegui.session.SessionLifecycleManager;
 import com.github.claudecodegui.session.StreamMessageCoalescer;
 import com.github.claudecodegui.util.JsUtils;
-import com.github.claudecodegui.util.MessageJsonConverter;
 import com.google.gson.JsonObject;
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.application.ApplicationManager;
@@ -85,6 +84,9 @@ public class ChatWindowDelegate {
         ClaudeSDKBridge getClaudeSDKBridge();
         CodexSDKBridge getCodexSDKBridge();
         default com.github.claudecodegui.provider.grok.GrokSDKBridge getGrokSDKBridge() {
+            return null;
+        }
+        default com.github.claudecodegui.provider.zcode.ZcodeSDKBridge getZcodeSDKBridge() {
             return null;
         }
         Map<String, MarkerCliBridge> getCliBridges();
@@ -190,36 +192,16 @@ public class ChatWindowDelegate {
             if (savedNodePath != null && !savedNodePath.trim().isEmpty()) {
                 String path = savedNodePath.trim();
                 applyNodePathToBridges(path);
-                claudeSDKBridge.verifyAndCacheNodePath(path);
-                LOG.info("Using manually configured Node.js path: " + path);
+                // The webview initializer performs the authoritative verification on its
+                // preparation worker before creating the browser. Avoid starting a duplicate
+                // subprocess here; this constructor path must remain non-blocking.
+                LOG.info("Using manually configured Node.js path: " + path
+                        + " (verification deferred to webview preparation)");
             } else {
-                // Auto-detection spawns shell processes which block the calling thread for several
-                // seconds per attempt. Running this on the EDT freezes the entire IDE. Offload to
-                // a pooled thread; the bridges fall back to invoking "node" by name until the
-                // detection completes and updates them.
-                LOG.info("No saved Node.js path found, scheduling auto-detection on background thread...");
-                ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                    try {
-                        com.github.claudecodegui.model.NodeDetectionResult detected =
-                            claudeSDKBridge.detectNodeWithDetails();
-
-                        if (detected != null && detected.isFound() && detected.getNodePath() != null) {
-                            String detectedPath = detected.getNodePath();
-                            String detectedVersion = detected.getNodeVersion();
-
-                            props.setValue(NODE_PATH_PROPERTY_KEY, detectedPath);
-                            applyNodePathToBridges(detectedPath);
-                            claudeSDKBridge.verifyAndCacheNodePath(detectedPath);
-
-                            LOG.info("Auto-detected Node.js: " + detectedPath + " (" + detectedVersion + ")");
-                        } else {
-                            LOG.warn("Failed to auto-detect Node.js path. Error: " +
-                                (detected != null ? detected.getErrorMessage() : "Unknown error"));
-                        }
-                    } catch (Exception e) {
-                        LOG.error("Failed to auto-detect Node.js path: " + e.getMessage(), e);
-                    }
-                });
+                // WebviewInitializer owns the startup preparation and performs the single
+                // background detection there. Keeping construction free of a second probe
+                // avoids duplicate shell processes and competing writes to the shared cache.
+                LOG.info("No saved Node.js path; deferring detection to webview preparation...");
             }
         } catch (Exception e) {
             LOG.error("Failed to load Node.js path: " + e.getMessage(), e);
@@ -351,6 +333,7 @@ public class ChatWindowDelegate {
                 claudeSDKBridge,
                 codexSDKBridge,
                 host.getGrokSDKBridge(),
+                host.getZcodeSDKBridge(),
                 settingsService,
                 jsCallback,
                 host::isActiveContent,
@@ -596,6 +579,9 @@ public class ChatWindowDelegate {
         host.callJavaScript("showLoading", "true");
 
         host.getSession().send(prompt, null, (String) null).thenRun(() -> {
+            // Only the last message's content string is read, and content is immutable,
+            // so the shallow copy is enough — getMessagesSnapshot would deep-copy every
+            // raw tree in the transcript for a value this call never touches.
             List<ClaudeSession.Message> messages = host.getSession().getMessages();
             if (!messages.isEmpty()) {
                 ClaudeSession.Message last = messages.get(messages.size() - 1);
@@ -627,24 +613,35 @@ public class ChatWindowDelegate {
             pushCurrentTabStateToFrontend();
         }
         host.getSessionLifecycleManager().sendCurrentPermissionMode();
+        // A page (re)load can silently drop the one-shot dialog-show injection,
+        // leaving the future blocked until the safety net fires with the dialog
+        // never shown. The webview is now ready, so replay whatever is pending.
+        host.getPermissionHandler().replayPendingDialogsToWebview();
         replayCurrentSessionStateToFrontend();
         if (runtimeRecovery) {
             refreshFrontendDerivedState();
         }
         host.persistTabSessionState();
 
-        if (pendingQuickFixPrompt != null && pendingQuickFixCallback != null) {
+        if (this.pendingQuickFixPrompt != null && this.pendingQuickFixCallback != null) {
             LOG.info("Processing pending QuickFix message after frontend ready");
-            String prompt = pendingQuickFixPrompt;
-            MessageCallback callback = pendingQuickFixCallback;
-            pendingQuickFixPrompt = null;
-            pendingQuickFixCallback = null;
+            String prompt = this.pendingQuickFixPrompt;
+            MessageCallback callback = this.pendingQuickFixCallback;
+            this.pendingQuickFixPrompt = null;
+            this.pendingQuickFixCallback = null;
             ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                executePendingQuickFix(prompt, callback);
+                this.executePendingQuickFix(prompt, callback);
             });
         }
 
-        host.getStreamCoalescer().flush(null);
+        // replayCurrentSessionStateToFrontend already force-fulls the live transcript
+        // through the coalescer. A second flush would serialize the same snapshot
+        // again and discard the first. Only the no-session path still flushes:
+        // replay is a no-op then, and the coalescer may still hold a parked snapshot
+        // from the previous page.
+        if (this.host.getSession() == null) {
+            this.host.getStreamCoalescer().flush(null);
+        }
     }
 
     /**
@@ -753,11 +750,8 @@ public class ChatWindowDelegate {
                 host.callJavaScript("setSessionId", JsUtils.escapeJs(sessionId));
             }
 
-            List<ClaudeSession.Message> messages = session.getMessages();
-            if (!messages.isEmpty()) {
-                String messagesJson = MessageJsonConverter.convertMessagesToJson(messages);
-                host.callJavaScript("updateMessages", JsUtils.escapeJs(messagesJson));
-            }
+            List<ClaudeSession.Message> messages = session.getMessagesSnapshot();
+            host.getStreamCoalescer().replayLatestSnapshot(messages);
 
             host.callJavaScript("showLoading", String.valueOf(session.isLoading()));
             host.callJavaScript("showThinkingStatus", String.valueOf(false));

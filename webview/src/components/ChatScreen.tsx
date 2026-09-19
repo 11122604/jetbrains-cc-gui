@@ -87,6 +87,7 @@ export interface ChatScreenProps {
   currentProvider: ProviderState['currentProvider'];
   selectedModel: ProviderState['selectedModel'];
   permissionMode: ProviderState['permissionMode'];
+  codexNativeAutoReviewAvailable?: ProviderState['codexNativeAutoReviewAvailable'];
   selectedAgent: ProviderState['selectedAgent'];
   sdkStatusLoading: ProviderState['sdkStatusLoading'];
   sdkStatusError: ProviderState['sdkStatusError'];
@@ -120,6 +121,8 @@ export interface ChatScreenProps {
   // Message queue
   messageQueue: MessageQueueValue;
   onRemoveFromQueue: (id: string) => void;
+  /** Drag-sort callback; orderedIds[0] is the next message to execute */
+  onReorderQueue?: (orderedIds: string[]) => void;
 }
 
 /**
@@ -142,6 +145,7 @@ export const ChatScreen = ({
   onSubmit, onInterrupt, onRewind,
   onNavigateToProviderSettings, onProviderSelect,
   currentProvider, selectedModel, permissionMode, selectedAgent,
+  codexNativeAutoReviewAvailable = true,
   sdkStatusLoading, sdkStatusError, onRetrySdkStatus, currentSdkInstalled,
   activeProviderConfig, claudeSettingsAlwaysThinkingEnabled,
   reasoningEffort, codexFastMode, dshPreset, streamingEnabledSetting, sendShortcut, autoOpenFileEnabled,
@@ -149,7 +153,7 @@ export const ChatScreen = ({
   onModeSelect, onModelSelect, onAgentSelect, onReasoningChange, onCodexFastModeChange, onDshPresetChange, onToggleThinking,
   onStreamingEnabledChange,
   onAutoOpenFileEnabledChange, onLongContextChange,
-  messageQueue, onRemoveFromQueue,
+  messageQueue, onRemoveFromQueue, onReorderQueue,
 }: ChatScreenProps) => {
   const { t } = useTranslation();
   const { messages, status, loading, isThinking, streamingActive, loadingStartTime, subagentHistories } = useMessages();
@@ -337,6 +341,7 @@ export const ChatScreen = ({
           isLoading={loading}
           selectedModel={selectedModel}
           permissionMode={permissionMode}
+          codexNativeAutoReviewAvailable={codexNativeAutoReviewAvailable}
           currentProvider={currentProvider}
           usagePercentage={usagePercentage}
           usageUsedTokens={usageUsedTokens}
@@ -404,6 +409,7 @@ export const ChatScreen = ({
           addToast={addToast}
           messageQueue={messageQueue}
           onRemoveFromQueue={onRemoveFromQueue}
+          onReorderQueue={onReorderQueue}
           autoOpenFileEnabled={autoOpenFileEnabled}
           onAutoOpenFileEnabledChange={onAutoOpenFileEnabledChange}
           longContextEnabled={longContextEnabled}

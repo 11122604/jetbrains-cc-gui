@@ -9,7 +9,9 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -26,44 +28,27 @@ import static org.junit.Assert.assertTrue;
 /**
  * Unit tests for {@link PermissionHandler}.
  *
- * <p>The dialog-show entry points ({@code showFrontendPermissionDialog},
- * {@code showAskUserQuestionDialog}, {@code showPlanApprovalDialog}) post to the IntelliJ EDT via
- * {@code ApplicationManager.getApplication().invokeLater(...)}, so they require the full plugin
- * test fixture and a backend safety-net wait to exercise the real safety net — not feasible in a plain JUnit
- * unit test. Instead we cover the testable surface:</p>
- *
- * <ul>
- *   <li>{@link PermissionHandler#getSupportedTypes()} — the IPC dispatch table.</li>
- *   <li>{@link PermissionHandler#handle(String, String)} — the dispatch path for each supported
- *       type, plus rejection of unknown types.</li>
- *   <li>{@link PermissionHandler#clearPendingRequests()} — the session-change safety net that
- *       fans default-deny payloads to every in-flight future.</li>
- *   <li>The atomic {@link CompletableFuture#complete(Object)} contract that the three safety-net
- *       timers depend on (see PermissionHandler L2).</li>
- * </ul>
- *
- * <p>Pending-request maps are populated via reflection so we can exercise the response paths
- * without going through the EDT.</p>
+ * <p>Controlled EDT dispatch and timers verify replay ordering and token isolation without real JCEF or timeout waits.</p>
  */
 public class PermissionHandlerTest {
 
     private PermissionHandler handler;
+    private RecordingJsCallback recordingJsCallback;
 
     @Before
     public void setUp() {
+        recordingJsCallback = new RecordingJsCallback();
         handler = new PermissionHandler(contextStub());
     }
 
     @Test
-    public void getSupportedTypesReturnsTheThreeIpcMessageTypes() {
-        // Order is part of the dispatch contract documented in PermissionHandler.SUPPORTED_TYPES,
-        // but the asserted property here is set-membership: the bridge will deliver any of these
-        // three keys and the handler must claim ownership of all three.
+    public void getSupportedTypesReturnsDialogIpcMessageTypes() {
         String[] actual = handler.getSupportedTypes().clone();
         String[] expected = {
                 "permission_decision",
                 "ask_user_question_response",
-                "plan_approval_response"
+                "plan_approval_response",
+                "dialog_delivery_ack"
         };
         Arrays.sort(actual);
         Arrays.sort(expected);
@@ -275,7 +260,8 @@ public class PermissionHandlerTest {
         FakeAskUserQuestionVisualNotifier visualNotifier = new FakeAskUserQuestionVisualNotifier();
         FakeAskUserQuestionSoundNotifier soundNotifier = new FakeAskUserQuestionSoundNotifier();
         PermissionHandler configuredHandler = new PermissionHandler(
-                contextStub(), scheduler, visualNotifier, soundNotifier);
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                visualNotifier, soundNotifier);
 
         JsonObject questions = new JsonObject();
         configuredHandler.showAskUserQuestionDialog("ask-1", questions);
@@ -284,45 +270,348 @@ public class PermissionHandlerTest {
         assertEquals(1, soundNotifier.callCount);
     }
 
+    // Replay coverage: a page (re)load can silently drop the one-shot dialog-show
+    // injection, which used to leave the future blocked until the safety net fired
+    // with the dialog never shown. frontend_ready now replays every pending show,
+    // and close signals are parked until they can be replayed too.
+
+    @Test
+    public void replayPendingDialogsReinjectsPendingAskUserQuestionShow() {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        JsonObject questions = new JsonObject();
+        questions.addProperty("requestId", "ask-replay");
+        configuredHandler.showAskUserQuestionDialog("ask-replay", questions);
+        int injectionsAfterShow = recordingJsCallback.executedScripts.size();
+
+        configuredHandler.replayPendingDialogsToWebview();
+
+        assertTrue("replay must re-inject the pending show",
+                recordingJsCallback.executedScripts.size() > injectionsAfterShow);
+        String reinjected = recordingJsCallback.executedScripts.get(
+                recordingJsCallback.executedScripts.size() - 1);
+        assertTrue("replayed script must call the webview show function",
+                reinjected.contains("showAskUserQuestionDialog"));
+        assertTrue("replayed script must carry the original payload",
+                reinjected.contains("ask-replay"));
+    }
+
+    @Test
+    public void replayPendingDialogsIsHarmlessWhenNothingIsPending() {
+        int injectionsBefore = recordingJsCallback.executedScripts.size();
+
+        handler.replayPendingDialogsToWebview();
+
+        assertEquals(injectionsBefore, recordingJsCallback.executedScripts.size());
+    }
+
+    @Test
+    public void replayPendingDialogsSkipsResolvedRequests() throws Exception {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        configuredHandler.showAskUserQuestionDialog("ask-answered", new JsonObject());
+        // The user answered before frontend_ready arrived: the future is completed
+        // and the entry removed, so replay must not resurrect the dialog.
+        configuredHandler.handle("ask_user_question_response",
+                "{\"requestId\":\"ask-answered\",\"dialogToken\":\""
+                        + getAskUserMapOf(configuredHandler).get("ask-answered").dialogToken + "\",\"answers\":{}}");
+        int injectionsBeforeReplay = countScriptsContaining("showAskUserQuestionDialog");
+
+        configuredHandler.replayPendingDialogsToWebview();
+
+        assertEquals(injectionsBeforeReplay, countScriptsContaining("showAskUserQuestionDialog"));
+        assertTrue(getAskUserMapOf(configuredHandler).isEmpty());
+    }
+
+    @Test
+    public void safetyNetTimeoutRecordsUndeliveredCloseSignalForReplay() throws Exception {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        configuredHandler.showAskUserQuestionDialog("ask-timeout", new JsonObject());
+        scheduler.runnable.run(); // fire the safety net → forceClose issued
+
+        Deque<PermissionHandler.UndeliveredCloseSignal> signals =
+                getUndeliveredCloseSignals(configuredHandler);
+        assertEquals("close signal must be parked for replay", 1, signals.size());
+        assertEquals("forceCloseAskUserQuestionDialog", signals.getFirst().functionName);
+    }
+
+    @Test
+    public void delayedAcknowledgementOnlyRemovesItsOwnToken() throws Exception {
+        Method record = PermissionHandler.class.getDeclaredMethod(
+                "recordUndeliveredCloseSignal", String.class, String.class, String.class);
+        record.setAccessible(true);
+        record.invoke(handler, "forceClosePermissionDialog", "channel-1", "token-old");
+        record.invoke(handler, "forceClosePermissionDialog", "channel-1", "token-new");
+
+        Deque<PermissionHandler.UndeliveredCloseSignal> signals =
+                getUndeliveredCloseSignals(handler);
+        assertEquals(2, signals.size());
+        handler.handle("dialog_delivery_ack",
+                "{\"functionName\":\"forceClosePermissionDialog\",\"targetId\":\"channel-1\",\"dialogToken\":\"token-old\"}");
+        assertEquals(1, signals.size());
+        assertEquals("token-new", signals.getFirst().dialogToken);
+    }
+
+    @Test
+    public void deliveryAckWithoutTargetIdDoesNotClearParkedCloseSignal() throws Exception {
+        Method record = PermissionHandler.class.getDeclaredMethod(
+                "recordUndeliveredCloseSignal", String.class, String.class, String.class);
+        record.setAccessible(true);
+        record.invoke(handler, "forceClosePermissionDialog", "channel-1", "token");
+
+        // A malformed ack without targetId must not fall back to "" and match a
+        // close-all signal; the parked signal stays parked.
+        handler.handle("dialog_delivery_ack", "{\"functionName\":\"forceClosePermissionDialog\"}");
+
+        assertEquals(1, getUndeliveredCloseSignals(handler).size());
+    }
+
+    @Test
+    public void dialogDeliveryAcknowledgementRemovesCloseSignal() throws Exception {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        configuredHandler.showAskUserQuestionDialog("ask-ack", new JsonObject());
+        scheduler.runnable.run();
+        assertEquals(1, getUndeliveredCloseSignals(configuredHandler).size());
+
+        configuredHandler.handle("dialog_delivery_ack",
+                "{\"functionName\":\"forceCloseAskUserQuestionDialog\",\"targetId\":\"ask-ack\",\"dialogToken\":\""
+                        + getUndeliveredCloseSignals(configuredHandler).getFirst().dialogToken + "\"}");
+
+        assertTrue(getUndeliveredCloseSignals(configuredHandler).isEmpty());
+    }
+
+    @Test
+    public void nextShowFlushesUndeliveredCloseSignalsBeforeInjectingTheShow() throws Exception {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        configuredHandler.showAskUserQuestionDialog("ask-orphan", new JsonObject());
+        scheduler.runnable.run(); // park a close signal for "ask-orphan"
+
+        configuredHandler.showAskUserQuestionDialog("ask-next", new JsonObject());
+
+        Deque<PermissionHandler.UndeliveredCloseSignal> signals =
+                getUndeliveredCloseSignals(configuredHandler);
+        assertFalse("flushed signals remain until the frontend acknowledges delivery",
+                signals.isEmpty());
+        // The close for the orphaned request must have been re-injected; the show
+        // for "ask-next" follows it in FIFO order.
+        String closeScript = findScriptContaining("forceCloseAskUserQuestionDialog");
+        assertNotNull(closeScript);
+        assertTrue(closeScript.contains("ask-orphan"));
+        int closeIndex = recordingJsCallback.executedScripts.indexOf(closeScript);
+        int nextShowIndex = findLastIndexContaining("showAskUserQuestionDialog");
+        assertTrue("close replay must precede the new show injection", closeIndex < nextShowIndex);
+    }
+
+    @Test
+    public void answeredPermissionDialogIgnoresDuplicateResponses() throws Exception {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        configuredHandler.showFrontendPermissionDialog("Bash", new JsonObject());
+        String channelId = getPermissionMapOf(configuredHandler).keySet().iterator().next();
+        PermissionHandler.PendingDialogShow<Integer> pending =
+                getPermissionMapOf(configuredHandler).get(channelId);
+
+        configuredHandler.handle("permission_decision",
+                "{\"channelId\":\"" + channelId + "\",\"dialogToken\":\"" + pending.dialogToken
+                        + "\",\"allow\":true,\"remember\":false}");
+
+        assertTrue("the answered dialog's future must be resolved", pending.future.isDone());
+        configuredHandler.handle("permission_decision",
+                "{\"channelId\":\"" + channelId + "\",\"allow\":false,\"remember\":false}");
+        assertEquals(Integer.valueOf(PermissionService.PermissionResponse.ALLOW.getValue()), pending.future.join());
+    }
+
+    @Test
+    public void safetyNetTimeoutIgnoresLateDecisions() throws Exception {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(
+                contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+
+        configuredHandler.showFrontendPermissionDialog("Bash", new JsonObject());
+        String channelId = getPermissionMapOf(configuredHandler).keySet().iterator().next();
+        PermissionHandler.PendingDialogShow<Integer> pending =
+                getPermissionMapOf(configuredHandler).get(channelId);
+
+        scheduler.runnable.run(); // safety-net fires: future resolved with DENY, dialog force-closed
+
+        assertTrue("the timed-out dialog's future must be resolved", pending.future.isDone());
+        configuredHandler.handle("permission_decision",
+                "{\"channelId\":\"" + channelId + "\",\"dialogToken\":\"" + pending.dialogToken
+                        + "\",\"allow\":true,\"remember\":false}");
+        assertEquals(Integer.valueOf(PermissionService.PermissionResponse.DENY.getValue()), pending.future.join());
+    }
+
+    @Test
+    public void staleAndUnversionedResponsesCannotConsumeCurrentDialogs() throws Exception {
+        CompletableFuture<Integer> permission = new CompletableFuture<>();
+        CompletableFuture<JsonObject> ask = new CompletableFuture<>();
+        CompletableFuture<JsonObject> plan = new CompletableFuture<>();
+        getPermissionMap().put("reused", new PermissionHandler.PendingDialogShow<>(permission, "{}", 1, "current"));
+        getAskUserMap().put("reused", new PermissionHandler.PendingDialogShow<>(ask, "{}", 2, "current"));
+        getPlanApprovalMap().put("reused", new PermissionHandler.PendingDialogShow<>(plan, "{}", 3, "current"));
+        for (String token : new String[]{"", ",\"dialogToken\":\"old\""}) {
+            handler.handle("permission_decision", "{\"channelId\":\"reused\",\"allow\":true,\"remember\":false" + token + "}");
+            handler.handle("ask_user_question_response", "{\"requestId\":\"reused\",\"answers\":{}" + token + "}");
+            handler.handle("plan_approval_response", "{\"requestId\":\"reused\",\"approved\":true" + token + "}");
+        }
+        assertFalse(permission.isDone());
+        assertFalse(ask.isDone());
+        assertFalse(plan.isDone());
+        assertTrue(getUndeliveredCloseSignals(handler).isEmpty());
+    }
+
+    @Test
+    public void legacyTimeoutCannotResolveReplacementInPermissionManager() {
+        com.github.claudecodegui.permission.PermissionManager manager = new com.github.claudecodegui.permission.PermissionManager();
+        com.github.claudecodegui.permission.PermissionRequest old = manager.createRequest("reused", "Bash", Map.of(), null, null);
+        com.github.claudecodegui.permission.PermissionRequest current = manager.createRequest("reused", "Bash", Map.of(), null, null);
+
+        manager.handlePermissionDecision(old, false, false, "Timed out");
+
+        assertTrue(old.getResultFuture().isDone());
+        assertFalse(current.getResultFuture().isDone());
+        manager.handlePermissionDecision(current, true, true, "");
+        assertEquals(com.github.claudecodegui.permission.PermissionRequest.PermissionResult.Behavior.ALLOW,
+                current.getResultFuture().join().getBehavior());
+        assertTrue(manager.createRequest("next", "Bash", Map.of(), null, null).getResultFuture().isDone());
+    }
+
+    @Test
+    public void legacyRequestUsesBoundHandlerAndRejectsStaleToken() throws Exception {
+        FakeSafetyNetScheduler scheduler = new FakeSafetyNetScheduler();
+        PermissionHandler configuredHandler = new PermissionHandler(contextStub(), scheduler, new FakeEdtDispatcher(),
+                new FakeAskUserQuestionVisualNotifier(), new FakeAskUserQuestionSoundNotifier());
+        com.github.claudecodegui.permission.PermissionRequest request =
+                new com.github.claudecodegui.permission.PermissionRequest("legacy", "Bash", Map.of(), null, null);
+        configuredHandler.showPermissionDialog(request);
+        assertNotNull(findScriptContaining("showPermissionDialog"));
+        configuredHandler.handle("permission_decision",
+                "{\"channelId\":\"legacy\",\"allow\":true,\"remember\":false,\"dialogToken\":\"stale\"}");
+        assertFalse(request.getResultFuture().isDone());
+        request.reject("Canceled", true);
+        assertEquals(1, getUndeliveredCloseSignals(configuredHandler).size());
+    }
+
+    @Test
+    public void orphanResponsesDoNotSendUnversionedClose() throws Exception {
+        handler.handle("ask_user_question_response", "{\"requestId\":\"missing\",\"answers\":{}}");
+        handler.handle("plan_approval_response", "{\"requestId\":\"missing\",\"approved\":true}");
+        assertTrue(getUndeliveredCloseSignals(handler).isEmpty());
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, PermissionHandler.PendingDialogShow<Integer>> getPermissionMapOf(
+            PermissionHandler target) throws NoSuchFieldException, IllegalAccessException {
+        Field f = PermissionHandler.class.getDeclaredField("pendingPermissionRequests");
+        f.setAccessible(true);
+        return (Map<String, PermissionHandler.PendingDialogShow<Integer>>) f.get(target);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, PermissionHandler.PendingDialogShow<JsonObject>> getAskUserMapOf(
+            PermissionHandler target) throws NoSuchFieldException, IllegalAccessException {
+        Field f = PermissionHandler.class.getDeclaredField("pendingAskUserQuestionRequests");
+        f.setAccessible(true);
+        return (Map<String, PermissionHandler.PendingDialogShow<JsonObject>>) f.get(target);
+    }
+
+    private String findScriptContaining(String needle) {
+        for (String script : recordingJsCallback.executedScripts) {
+            if (script.contains(needle)) {
+                return script;
+            }
+        }
+        return null;
+    }
+
+    private int findLastIndexContaining(String needle) {
+        for (int i = recordingJsCallback.executedScripts.size() - 1; i >= 0; i--) {
+            if (recordingJsCallback.executedScripts.get(i).contains(needle)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int countScriptsContaining(String needle) {
+        int count = 0;
+        for (String script : recordingJsCallback.executedScripts) {
+            if (script.contains(needle)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     // --- reflection helpers (the three pending-request maps are private) ---
 
     @SuppressWarnings("unchecked")
-    private Map<String, CompletableFuture<Integer>> getPermissionMap()
+    private Map<String, PermissionHandler.PendingDialogShow<Integer>> getPermissionMap()
             throws NoSuchFieldException, IllegalAccessException {
         Field f = PermissionHandler.class.getDeclaredField("pendingPermissionRequests");
         f.setAccessible(true);
-        return (Map<String, CompletableFuture<Integer>>) f.get(handler);
+        return (Map<String, PermissionHandler.PendingDialogShow<Integer>>) f.get(handler);
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, CompletableFuture<JsonObject>> getAskUserMap()
+    private Map<String, PermissionHandler.PendingDialogShow<JsonObject>> getAskUserMap()
             throws NoSuchFieldException, IllegalAccessException {
         Field f = PermissionHandler.class.getDeclaredField("pendingAskUserQuestionRequests");
         f.setAccessible(true);
-        return (Map<String, CompletableFuture<JsonObject>>) f.get(handler);
+        return (Map<String, PermissionHandler.PendingDialogShow<JsonObject>>) f.get(handler);
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, CompletableFuture<JsonObject>> getPlanApprovalMap()
+    private Map<String, PermissionHandler.PendingDialogShow<JsonObject>> getPlanApprovalMap()
             throws NoSuchFieldException, IllegalAccessException {
         Field f = PermissionHandler.class.getDeclaredField("pendingPlanApprovalRequests");
         f.setAccessible(true);
-        return (Map<String, CompletableFuture<JsonObject>>) f.get(handler);
+        return (Map<String, PermissionHandler.PendingDialogShow<JsonObject>>) f.get(handler);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Deque<PermissionHandler.UndeliveredCloseSignal> getUndeliveredCloseSignals(
+            PermissionHandler target) throws NoSuchFieldException, IllegalAccessException {
+        Field f = PermissionHandler.class.getDeclaredField("undeliveredCloseSignals");
+        f.setAccessible(true);
+        return (Deque<PermissionHandler.UndeliveredCloseSignal>) f.get(target);
     }
 
     private void injectPermissionFuture(String key, CompletableFuture<Integer> future)
             throws NoSuchFieldException, IllegalAccessException {
-        getPermissionMap().put(key, future);
+        getPermissionMap().put(key, new PermissionHandler.PendingDialogShow<>(future, "{}", 0L, null));
     }
 
     private void injectAskUserFuture(String key, CompletableFuture<JsonObject> future)
             throws NoSuchFieldException, IllegalAccessException {
-        getAskUserMap().put(key, future);
+        getAskUserMap().put(key, new PermissionHandler.PendingDialogShow<>(future, "{}", 0L, null));
     }
 
     private void injectPlanApprovalFuture(String key, CompletableFuture<JsonObject> future)
             throws NoSuchFieldException, IllegalAccessException {
-        getPlanApprovalMap().put(key, future);
+        getPlanApprovalMap().put(key, new PermissionHandler.PendingDialogShow<>(future, "{}", 0L, null));
     }
 
     private HandlerContext contextStub() {
@@ -335,10 +624,7 @@ public class PermissionHandlerTest {
                 null,
                 null,
                 settingsService,
-                new HandlerContext.JsCallback() {
-                    @Override public void callJavaScript(String functionName, String... args) {}
-                    @Override public String escapeJs(String str) { return str; }
-                }
+                recordingJsCallback
         );
     }
 
@@ -400,6 +686,32 @@ public class PermissionHandlerTest {
         @Override
         public void play() {
             callCount++;
+        }
+    }
+
+    /** Runs injections inline and is paired with {@link RecordingJsCallback} to observe scripts. */
+    private static class FakeEdtDispatcher implements PermissionHandler.EdtDispatcher {
+        @Override
+        public void post(Runnable runnable) {
+            runnable.run();
+        }
+    }
+
+    private static class RecordingJsCallback implements HandlerContext.JsCallback {
+        private final java.util.List<String> executedScripts = new java.util.ArrayList<>();
+
+        @Override
+        public void callJavaScript(String functionName, String... args) {
+        }
+
+        @Override
+        public String escapeJs(String str) {
+            return str;
+        }
+
+        @Override
+        public void executeJavaScript(String jsCode) {
+            executedScripts.add(jsCode);
         }
     }
 }

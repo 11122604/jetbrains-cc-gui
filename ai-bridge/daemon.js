@@ -29,6 +29,7 @@ import { createInterface } from 'readline';
 import { handleClaudeCommand } from './channels/claude-channel.js';
 import { handleCodexCommand } from './channels/codex-channel.js';
 import { handleGrokCommand } from './channels/grok-channel.js';
+import { handleZcodeCommand } from './channels/zcode-channel.js';
 import { loadClaudeSdk, isClaudeSdkAvailable } from './utils/sdk-loader.js';
 import {
   sendMessagePersistent,
@@ -38,6 +39,7 @@ import {
   abortCurrentTurn,
   resetRuntimePersistent,
   getContextUsagePersistent,
+  getSnapshot as getClaudeRuntimeSnapshot,
   setPermissionModePersistent
 } from './services/claude/persistent-query-service.js';
 import {
@@ -48,8 +50,20 @@ import {
   shutdownPersistentRuntimes as grokShutdownPersistentRuntimes,
   setPermissionModePersistent as grokSetPermissionModePersistent,
   getContextUsagePersistent as grokGetContextUsagePersistent,
-  getUsagePersistent as grokGetUsagePersistent
+  getUsagePersistent as grokGetUsagePersistent,
+  getRuntimeSnapshot as getGrokRuntimeSnapshot
 } from './services/grok/persistent-acp-service.js';
+import {
+  sendMessagePersistent as zcodeSendPersistent,
+  preconnectPersistent as zcodePreconnectPersistent,
+  resetRuntimePersistent as zcodeResetRuntimePersistent,
+  abortCurrentTurn as zcodeAbortCurrentTurn,
+  shutdownPersistentRuntimes as zcodeShutdownPersistentRuntimes,
+  setPermissionModePersistent as zcodeSetPermissionModePersistent,
+  getContextUsagePersistent as zcodeGetContextUsagePersistent,
+  getUsagePersistent as zcodeGetUsagePersistent,
+  getRuntimeSnapshot as getZcodeRuntimeSnapshot
+} from './services/zcode/persistent-zcode-service.js';
 import { injectStartupEnvVars, isWebviewControlledEnvVar, isDangerousEnvVar } from './config/api-config.js';
 import { cleanupStaleTempImages } from './services/claude/attachment-service.js';
 
@@ -70,6 +84,8 @@ injectStartupEnvVars();
 
 // NOTE: Keep in sync with package.json version when updating.
 const DAEMON_VERSION = '1.0.0';
+const DAEMON_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+const DAEMON_IDLE_CHECK_INTERVAL_MS = 15 * 1000;
 
 // =============================================================================
 // State
@@ -78,6 +94,10 @@ const DAEMON_VERSION = '1.0.0';
 let activeRequestId = null;
 let isDaemonMode = true;
 let sdkPreloaded = false;
+let lastCommandActivityAt = Date.now();
+let pendingCommandCount = 0;
+let idleShutdownInFlight = false;
+let idleShutdownGeneration = 0;
 
 // =============================================================================
 // Output Interception
@@ -387,6 +407,11 @@ async function processRequest(request) {
       ts: Date.now(),
       sdkPreloaded,
       memoryUsage: process.memoryUsage().heapUsed,
+      runtimes: {
+        claude: getClaudeRuntimeSnapshot(),
+        grok: getGrokRuntimeSnapshot(),
+        zcode: getZcodeRuntimeSnapshot(),
+      },
     });
     return;
   }
@@ -401,6 +426,11 @@ async function processRequest(request) {
       uptime: process.uptime(),
       sdkPreloaded,
       memoryUsage: process.memoryUsage(),
+      runtimes: {
+        claude: getClaudeRuntimeSnapshot(),
+        grok: getGrokRuntimeSnapshot(),
+        zcode: getZcodeRuntimeSnapshot(),
+      },
     });
     return;
   }
@@ -409,6 +439,7 @@ async function processRequest(request) {
   if (method === 'shutdown') {
     await shutdownPersistentRuntimes();
     await grokShutdownPersistentRuntimes().catch(() => {});
+    await zcodeShutdownPersistentRuntimes().catch(() => {});
     sendDaemonEvent('shutdown', { reason: 'requested' });
     writeRawLine({ id: id || '0', done: true, success: true });
     isDaemonMode = false;
@@ -492,6 +523,16 @@ async function processRequest(request) {
       await grokPreconnectPersistent(stdinData);
     } else if (provider === 'grok' && command === 'resetRuntime') {
       await grokResetRuntimePersistent(stdinData);
+    } else if (provider === 'zcode' && command === 'send') {
+      await zcodeSendPersistent(stdinData);
+    } else if (provider === 'zcode' && command === 'preconnect') {
+      await zcodePreconnectPersistent(stdinData);
+    } else if (provider === 'zcode' && command === 'resetRuntime') {
+      await zcodeResetRuntimePersistent(stdinData);
+    } else if (provider === 'zcode' && command === 'getContextUsage') {
+      await zcodeGetContextUsagePersistent(stdinData);
+    } else if (provider === 'zcode' && command === 'getUsage') {
+      await zcodeGetUsagePersistent(stdinData);
     } else {
       // Dispatch to the existing handlers for non-send commands.
       switch (provider) {
@@ -503,6 +544,9 @@ async function processRequest(request) {
           break;
         case 'grok':
           await handleGrokCommand(command, [], stdinData);
+          break;
+        case 'zcode':
+          await handleZcodeCommand(command, [], stdinData);
           break;
         default:
           throw new Error(`Unknown provider: ${provider}`);
@@ -612,8 +656,66 @@ async function runDaemonMain() {
   // Command requests must be serialized because they share `activeRequestId`
   // for stdout interception. Heartbeats/status are safe to run concurrently.
   let commandQueue = Promise.resolve();
+  let pendingIdleShutdownToken = null;
+  const deferredIdleLines = [];
 
-  rl.on('line', (line) => {
+  const cancelPendingIdleShutdown = () => {
+    if (pendingIdleShutdownToken === null) return;
+    pendingIdleShutdownToken = null;
+    idleShutdownGeneration++;
+    idleShutdownInFlight = false;
+    lastCommandActivityAt = Date.now();
+  };
+
+  // A daemon is deliberately lazy: after all provider runtimes have been
+  // released, keep the lightweight bridge around briefly for quick reuse and
+  // then terminate it. Heartbeats/status probes do not refresh this timer.
+  const idleReaper = setInterval(async () => {
+    if (idleShutdownInFlight || activeRequestId || pendingCommandCount > 0) return;
+    const idleFor = Date.now() - lastCommandActivityAt;
+    if (idleFor < DAEMON_IDLE_TIMEOUT_MS) return;
+
+    const claude = getClaudeRuntimeSnapshot();
+    const grok = getGrokRuntimeSnapshot();
+    const zcode = getZcodeRuntimeSnapshot();
+    const claudeBusy = (claude.anonymousRuntimeCount || 0) > 0
+      || (claude.sessionRuntimeCount || 0) > 0
+      || !!claude.activeTurnEpoch;
+    const grokBusy = (grok.runtimeCount || 0) > 0 || (grok.activeTurnCount || 0) > 0;
+    const zcodeBusy = zcode.clientActive || zcode.turnActive;
+    if (claudeBusy || grokBusy || zcodeBusy) return;
+
+    idleShutdownInFlight = true;
+    const shutdownGeneration = ++idleShutdownGeneration;
+    try {
+      await shutdownPersistentRuntimes();
+      await grokShutdownPersistentRuntimes().catch(() => {});
+      await zcodeShutdownPersistentRuntimes().catch(() => {});
+      // Commands arriving during provider cleanup wait until every close has
+      // finished, then resume on this daemon with fresh runtimes.
+      if (shutdownGeneration !== idleShutdownGeneration) {
+        idleShutdownInFlight = false;
+        for (const deferredLine of deferredIdleLines.splice(0)) {
+          handleInputLine(deferredLine);
+        }
+        return;
+      }
+      // Java owns the request registry. Only it can atomically reject new
+      // requests and confirm that no command was sent during this idle check.
+      pendingIdleShutdownToken = shutdownGeneration;
+      sendDaemonEvent('idle_shutdown_request', { token: shutdownGeneration });
+    } catch (error) {
+      idleShutdownInFlight = false;
+      pendingIdleShutdownToken = null;
+      for (const deferredLine of deferredIdleLines.splice(0)) {
+        handleInputLine(deferredLine);
+      }
+      _originalStderrWrite(`[daemon] Idle shutdown failed: ${error?.message || error}\n`, 'utf8');
+    }
+  }, DAEMON_IDLE_CHECK_INTERVAL_MS);
+  idleReaper.unref();
+
+  const handleInputLine = (line) => {
     // Skip empty lines
     if (!line.trim()) return;
 
@@ -626,6 +728,60 @@ async function runDaemonMain() {
         'utf8'
       );
       return;
+    }
+
+    if (request.method === 'idle_shutdown_ack'
+        || request.method === 'idle_shutdown_cancel') {
+      if (request.params?.token !== pendingIdleShutdownToken
+          || pendingIdleShutdownToken === null) return;
+      if (request.method === 'idle_shutdown_cancel') {
+        cancelPendingIdleShutdown();
+        for (const deferredLine of deferredIdleLines.splice(0)) {
+          handleInputLine(deferredLine);
+        }
+      } else {
+        pendingIdleShutdownToken = null;
+        deferredIdleLines.length = 0;
+        sendDaemonEvent('shutdown', { reason: 'idle_timeout' });
+        isDaemonMode = false;
+        setTimeout(() => _originalExit(0), 100).unref();
+      }
+      return;
+    }
+
+    if (request.method !== 'heartbeat' && request.method !== 'status') {
+      // A retired Java generation should not send commands here. Return an
+      // explicit error if a stale writer races the final exit.
+      if (!isDaemonMode) {
+        writeRawLine({
+          id: request.id || '0',
+          done: true,
+          success: false,
+          error: 'daemon_shutting_down'
+        });
+        return;
+      }
+      lastCommandActivityAt = Date.now();
+      // Wait until provider cleanup finishes, or until Java resolves the idle
+      // request. Processing now could let cleanup close a newly made runtime.
+      if (idleShutdownInFlight && request.method !== 'shutdown') {
+        deferredIdleLines.push(line);
+        if (pendingIdleShutdownToken === null) {
+          idleShutdownGeneration++;
+        }
+        return;
+      }
+      // Explicit shutdown may bypass the idle wait because Java is disposing
+      // of this daemon regardless of any queued work.
+      if (idleShutdownInFlight) {
+        if (pendingIdleShutdownToken !== null) {
+          cancelPendingIdleShutdown();
+          deferredIdleLines.length = 0;
+        } else {
+          idleShutdownGeneration++;
+          idleShutdownInFlight = false;
+        }
+      }
     }
 
     // Heartbeats and status queries don't use activeRequestId — safe to run immediately
@@ -642,10 +798,11 @@ async function runDaemonMain() {
         'utf8'
       );
       if (targetId) {
-        // Fire-and-forget for both providers
+        // Fire-and-forget for every provider with a persistent runtime
         Promise.all([
           abortCurrentTurn().catch((e) => _originalStderrWrite(`[daemon] Claude abort error: ${e.message}\n`, 'utf8')),
           grokAbortCurrentTurn().catch((e) => _originalStderrWrite(`[daemon] Grok abort error: ${e.message}\n`, 'utf8')),
+          zcodeAbortCurrentTurn().catch((e) => _originalStderrWrite(`[daemon] ZCode abort error: ${e.message}\n`, 'utf8')),
         ]);
       }
       writeRawLine({ id: request.id || '0', done: true, success: true });
@@ -694,18 +851,37 @@ async function runDaemonMain() {
       return;
     }
 
+    if (request.method === 'zcode.setPermissionMode') {
+      const switchId = request.id || '0';
+      zcodeSetPermissionModePersistent(request.params || {})
+        .then(() => writeRawLine({ id: switchId, done: true, success: true }))
+        .catch((e) => {
+          _originalStderrWrite(`[daemon] zcode.setPermissionMode error: ${e.message}\n`, 'utf8');
+          writeRawLine({ id: switchId, done: true, success: false, error: e.message || String(e) });
+        });
+      return;
+    }
+
     // Command requests are serialized to prevent activeRequestId conflicts
+    pendingCommandCount++;
     commandQueue = commandQueue
       .then(() => processRequest(request))
+      .finally(() => { pendingCommandCount = Math.max(0, pendingCommandCount - 1); })
       .catch((e) => {
         _originalStderrWrite(
           `[daemon] Request queue error: ${e.message}\n`,
           'utf8'
         );
       });
-  });
+  };
+  rl.on('line', handleInputLine);
 
   rl.on('close', async () => {
+    // Idle reaper already performed graceful provider shutdown and scheduled
+    // process exit; do not run the stdin-disconnect cleanup a second time.
+    if (!isDaemonMode) {
+      return;
+    }
     // stdin closed — Java process disconnected, exit gracefully
     // Force-exit after 5s to prevent zombie processes when SDK network connections hang
     const forceExitTimer = setTimeout(() => {
@@ -718,6 +894,7 @@ async function runDaemonMain() {
     try {
       await shutdownPersistentRuntimes();
       await grokShutdownPersistentRuntimes();
+      await zcodeShutdownPersistentRuntimes();
     } catch (e) {
       _originalStderrWrite(`[daemon] Failed to shutdown persistent runtimes: ${e.message}\n`, 'utf8');
     }

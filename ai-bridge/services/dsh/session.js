@@ -1,10 +1,27 @@
 /**
  * DSH session / workspace unary operations (ported from
  * desktop-cc-gui engine/dsh/session.rs).
+ *
+ * Callers use the legacy spelling of every endpoint; `DshHostClient` maps it
+ * onto the host's dialect. The payload *shapes* differ per dialect and are
+ * adapted here, plus the one behavioral rule this module owns: a session is
+ * never created from a bare `cwd`. The host files such a session under
+ * "Ungrouped" and never adopts it by directory afterwards, so both dialects
+ * bind through the Workspace first (`workspace.create` → `session/create
+ * {workspaceId}`). `session/prompt` additionally requires a client-minted
+ * `requestId` on modern hosts.
  */
+
+import { randomUUID } from 'node:crypto';
+import { DshRemoteMux } from './stream-client.js';
+import { MODERN_DIALECT } from './wire.js';
 
 export const THREAD_PREFIX = 'dsh:';
 export const PENDING_PREFIX = 'dsh-pending-';
+
+function isModern(client) {
+  return Boolean(client) && client.dialect === MODERN_DIALECT;
+}
 
 export function sessionIdFromThread(threadId) {
   const trimmed = String(threadId || '').trim();
@@ -21,6 +38,18 @@ export function threadIdForSession(sessionId) {
   return `${THREAD_PREFIX}${sessionId}`;
 }
 
+/**
+ * Bind one project directory as a Workspace and return the host's value.
+ *
+ * Both dialects expose it, and it is idempotent per canonical directory: the
+ * host resolves the path first and answers `created: false` for a directory it
+ * already owns, so binding once per turn cannot duplicate the user's workspace
+ * list.
+ *
+ * @param {object} client - negotiated host client.
+ * @param {string} path - absolute project directory.
+ * @returns {Promise<object>} the host's `{ workspace }` value.
+ */
 export async function createWorkspace(client, path) {
   return client.call('workspace.create', { path: String(path || '') });
 }
@@ -34,28 +63,25 @@ export function workspaceIdFromCreate(value) {
 }
 
 /**
- * Extract the session membership of a workspace.create result.
- * Returns { sessionIds: Set<string>|null, archivedSessionIds: Set<string> }.
- * A null sessionIds set means the host did not report membership (fall back
- * to cwd matching, same as desktop-cc-gui).
+ * Create — or idempotently adopt — one session owned by a Workspace.
+ *
+ * `cwd` is deliberately never sent: a session created from a cwd alone has no
+ * Workspace owner on the host, so it is filed under "Ungrouped" and stays
+ * there — the host groups by explicit ownership, and only its very first
+ * startup adopts sessions by directory. The Workspace, whose path is the
+ * session's directory, is what puts the session under its project.
+ *
+ * @param {object} client - negotiated host client.
+ * @param {string} workspaceId - Workspace that must own the session.
+ * @param {string} [sessionId] - existing session to adopt into that Workspace.
+ * @returns {Promise<string>} the session id the host settled on.
+ * @throws when no Workspace id is available: an ungrouped session is a bug, not
+ *   a fallback.
  */
-export function workspaceMembership(value) {
-  const workspace = value && value.workspace;
-  if (!workspace || typeof workspace !== 'object') {
-    return { sessionIds: null, archivedSessionIds: new Set() };
-  }
-  const sessionIds = Array.isArray(workspace.sessionIds)
-    ? new Set(workspace.sessionIds.filter((id) => typeof id === 'string'))
-    : null;
-  const archivedSessionIds = new Set(
-    Array.isArray(workspace.archivedSessionIds)
-      ? workspace.archivedSessionIds.filter((id) => typeof id === 'string')
-      : []
-  );
-  return { sessionIds, archivedSessionIds };
-}
-
 export async function createSession(client, workspaceId, sessionId) {
+  if (typeof workspaceId !== 'string' || !workspaceId) {
+    throw new Error('dsh session.create requires a workspaceId to keep the session grouped');
+  }
   const payload = { workspaceId };
   if (typeof sessionId === 'string' && sessionId.trim()) {
     payload.sessionId = sessionId.trim();
@@ -102,11 +128,16 @@ export function buildPromptContent(text, images = []) {
 }
 
 export async function prompt(client, sessionId, text, images = []) {
-  return client.call('session.prompt', {
+  const payload = {
     sessionId,
     mode: 'queue',
     content: buildPromptContent(text, images),
-  });
+  };
+  if (isModern(client)) {
+    // Modern hosts persist the accepted user message under this identity.
+    payload.requestId = randomUUID();
+  }
+  return client.call('session.prompt', payload);
 }
 
 export async function cancel(client, sessionId) {
@@ -127,7 +158,124 @@ export async function listSessions(client) {
   return Array.isArray(value && value.items) ? value.items : [];
 }
 
+/**
+ * One backwards page of session history.
+ *
+ * Legacy hosts page straight from `session.history`. Modern hosts split it:
+ * `session/follow`'s opening snapshot supplies the first window plus the
+ * `cursor` that `session/page` needs as `throughSeq`, so the cursor is cached
+ * per session for the follow-up pages.
+ */
+const historyCursors = new Map();
+/** Bound on cached follow cursors; the oldest entry drops first (Map order). */
+const HISTORY_CURSOR_CACHE_MAX = 64;
+
+function rememberHistoryCursor(key, cursor) {
+  historyCursors.delete(key);
+  if (historyCursors.size >= HISTORY_CURSOR_CACHE_MAX) {
+    historyCursors.delete(historyCursors.keys().next().value);
+  }
+  historyCursors.set(key, cursor);
+}
+
+function historyCursorKey(client, sessionId) {
+  return `${client && client.origin ? client.origin : ''}:${sessionId}`;
+}
+
+/** How long a cold `session/follow` may take to deliver its opening snapshot. */
+const FOLLOW_SNAPSHOT_TIMEOUT_MS = 15_000;
+
+/**
+ * Open one short-lived `session/follow` stream and resolve with its opening
+ * snapshot. Modern hosts have no cold history read that works without a
+ * cursor, so the snapshot is both the first window and the source of the
+ * `cursor` that `session/page` needs afterwards.
+ */
+function openFollowSnapshot(client, sessionId, maxMessages) {
+  return new Promise((resolve, reject) => {
+    const mux = new DshRemoteMux(client.muxUrl(), { headers: client.muxHeaders() });
+    let settled = false;
+    const finish = (settle) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      mux.close();
+      settle();
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error('dsh session/follow snapshot timed out')));
+    }, FOLLOW_SNAPSHOT_TIMEOUT_MS);
+
+    mux.open('session/follow', {
+      request: {
+        address: { kind: 'session', sessionId },
+        ...(Number.isInteger(maxMessages) && maxMessages > 0 ? { maxMessages } : {}),
+        // `assistantStream` is the literal `true` when present; a history read
+        // leaves it out entirely rather than sending `false`.
+      },
+    }, {
+      onValue: (value) => {
+        if (value && value.type === 'snapshot') {
+          finish(() => resolve({
+            cursor: value.cursor,
+            records: Array.isArray(value.records) ? value.records.map(unwrapHistoryRecord) : [],
+            hasMore: value.hasMore === true,
+          }));
+        }
+      },
+      onError: (error) => finish(() => reject(error)),
+      onEnd: () => finish(() => reject(new Error('dsh session/follow ended before its snapshot'))),
+    });
+    mux.connect();
+  });
+}
+
+async function modernHistoryPage(client, sessionId, maxMessages, beforeSeq) {
+  const key = historyCursorKey(client, sessionId);
+  const cachedCursor = historyCursors.get(key);
+  if (beforeSeq === null || beforeSeq === undefined || cachedCursor === undefined) {
+    const snapshot = await openFollowSnapshot(client, sessionId, maxMessages);
+    rememberHistoryCursor(key, snapshot.cursor);
+    return {
+      events: snapshot.records,
+      hasMore: snapshot.hasMore === true,
+    };
+  }
+  let value;
+  try {
+    value = await client.call('session.page', {
+      address: { kind: 'session', sessionId },
+      throughSeq: cachedCursor,
+      ...(Number.isInteger(beforeSeq) ? { beforeSeq } : {}),
+      ...(Number.isInteger(maxMessages) && maxMessages > 0 ? { maxMessages } : {}),
+    });
+  } catch (error) {
+    // A stale cursor (host restarted, session compacted) would fail every
+    // later page the same way; drop it so the next read re-snapshots.
+    historyCursors.delete(key);
+    throw error;
+  }
+  const records = Array.isArray(value && value.records) ? value.records : [];
+  return {
+    events: records.map(unwrapHistoryRecord),
+    hasMore: Boolean(value && value.hasMore),
+  };
+}
+
+/** Modern history records wrap the durable event; legacy pages carry it bare. */
+function unwrapHistoryRecord(record) {
+  if (record && typeof record === 'object' && record.type === 'event' && record.event) {
+    return record.event;
+  }
+  return record;
+}
+
 export async function history(client, sessionId, maxMessages, beforeSeq) {
+  if (isModern(client)) {
+    return modernHistoryPage(client, sessionId, maxMessages, beforeSeq);
+  }
   const payload = { sessionId };
   if (Number.isInteger(maxMessages) && maxMessages > 0) {
     payload.maxMessages = maxMessages;

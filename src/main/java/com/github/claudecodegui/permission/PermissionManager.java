@@ -143,6 +143,30 @@ public class PermissionManager {
     }
 
     /**
+     * Resolves the exact dialog request without consuming a new request that reuses its channel ID.
+     *
+     * @param request the original request bound to the dialog
+     * @param allow whether to allow the request
+     * @param remember whether to remember the tool-level decision
+     * @param rejectMessage the reason for rejection
+     */
+    public void handlePermissionDecision(PermissionRequest request, boolean allow, boolean remember, String rejectMessage) {
+        // Superseded requests must finish their own futures without removing replacements or changing permission memory.
+        boolean current = pendingRequests.remove(request.getChannelId(), request);
+        if (request.getResultFuture().isDone()) {
+            return;
+        }
+        if (current && remember) {
+            toolOnlyPermissionMemory.put(request.getToolName(), allow);
+        }
+        if (allow) {
+            request.accept();
+        } else {
+            request.reject(rejectMessage, true);
+        }
+    }
+
+    /**
      * Set the permission request callback.
      */
     public void setOnPermissionRequestedCallback(Consumer<PermissionRequest> callback) {

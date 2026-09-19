@@ -23,12 +23,21 @@ export interface ResetTransientUiStateOptions {
   streamingMessageIndexRef: MutableRefObject<number>;
   streamingContentRef: MutableRefObject<string>;
   streamingThinkingRef: MutableRefObject<string>;
+  clearStreamingBlockResets?: () => void;
   autoExpandedThinkingKeysRef: MutableRefObject<Set<string>>;
   contentUpdateTimeoutRef: MutableRefObject<number | null>;
   thinkingUpdateTimeoutRef: MutableRefObject<number | null>;
 
   // Turn tracking ref (for streaming assistant isolation)
   streamingTurnIdRef: MutableRefObject<number>;
+
+  /**
+   * Discards messages still waiting in the send queue. Every session-reset
+   * path funnels through this reset (beginSessionTransition AND the
+   * Java-driven clearMessages callback), so queueing the cleanup here keeps
+   * queued messages from firing into a freshly cleared/replaced session.
+   */
+  clearQueuedMessages?: () => void;
 }
 
 /**
@@ -44,11 +53,17 @@ export const buildResetTransientUiState = (opts: ResetTransientUiStateOptions) =
     opts.setLoadingStartTime(null);
     opts.setIsThinking(false);
     opts.setStreamingActive(false);
+    // Dropping the queue alongside loading keeps the queue-auto-execute effect
+    // (idle && non-empty) from dispatching stale entries into the reset session.
+    if (opts.clearQueuedMessages) {
+      opts.clearQueuedMessages();
+    }
     opts.isStreamingRef.current = false;
     opts.useBackendStreamingRenderRef.current = false;
     opts.streamingMessageIndexRef.current = -1;
     opts.streamingContentRef.current = '';
     opts.streamingThinkingRef.current = '';
+    opts.clearStreamingBlockResets?.();
     opts.autoExpandedThinkingKeysRef.current.clear();
     // Reset active turn ID to prevent stale streaming assistant recovery.
     // NOTE: turnIdCounterRef is intentionally NOT reset — it must stay monotonically

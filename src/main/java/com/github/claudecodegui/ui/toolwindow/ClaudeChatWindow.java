@@ -11,7 +11,9 @@ import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.common.MarkerCliBridge;
 import com.github.claudecodegui.provider.dsh.DshCliBridge;
 import com.github.claudecodegui.provider.grok.GrokSDKBridge;
+import com.github.claudecodegui.provider.zcode.ZcodeSDKBridge;
 import com.github.claudecodegui.provider.kimi.KimiCliBridge;
+import com.github.claudecodegui.provider.minimax.MiniMaxCliBridge;
 import com.github.claudecodegui.provider.opencode.OpenCodeCliBridge;
 import com.github.claudecodegui.provider.pi.PiCliBridge;
 import com.github.claudecodegui.provider.omp.OmpCliBridge;
@@ -76,11 +78,13 @@ public class ClaudeChatWindow {
     private final ClaudeSDKBridge claudeSDKBridge;
     private final CodexSDKBridge codexSDKBridge;
     private final GrokSDKBridge grokSDKBridge;
+    private final ZcodeSDKBridge zcodeSDKBridge;
     private final Map<String, MarkerCliBridge> cliBridges;
     private final KimiCliBridge kimiCliBridge;
     private final OpenCodeCliBridge openCodeCliBridge;
     private final PiCliBridge piCliBridge;
     private final OmpCliBridge ompCliBridge;
+    private final MiniMaxCliBridge miniMaxCliBridge;
     private final Project project;
     private final CodemossSettingsService settingsService;
     private final HtmlLoader htmlLoader;
@@ -227,14 +231,16 @@ public class ClaudeChatWindow {
         this.claudeSDKBridge = new ClaudeSDKBridge();
         this.codexSDKBridge = new CodexSDKBridge();
         this.grokSDKBridge = new GrokSDKBridge();
+        this.zcodeSDKBridge = new ZcodeSDKBridge();
         this.kimiCliBridge = new KimiCliBridge();
         this.openCodeCliBridge = new OpenCodeCliBridge();
         this.piCliBridge = new PiCliBridge();
         this.ompCliBridge = new OmpCliBridge();
+        this.miniMaxCliBridge = new MiniMaxCliBridge();
         // Grok uses GrokSDKBridge (persistent ACP / grok agent stdio), not MarkerCliBridge.
         this.cliBridges = SessionProviderRouter.registerCliBridges(
                 this.kimiCliBridge, this.openCodeCliBridge, this.piCliBridge,
-                this.ompCliBridge, new DshCliBridge());
+                this.ompCliBridge, new DshCliBridge(), this.miniMaxCliBridge);
         this.settingsService = new CodemossSettingsService();
         this.htmlLoader = new HtmlLoader(getClass());
         this.mainPanel = new JPanel(new BorderLayout());
@@ -256,17 +262,30 @@ public class ClaudeChatWindow {
         this.webviewEventQueue = new WebviewEventQueue<JBCefBrowser>(
                 () -> this.browser,
                 () -> this.disposed,
-                this::executeQueuedWebviewScript
+                () -> this.activePageGeneration,
+                runnable -> ApplicationManager.getApplication().invokeLater(runnable),
+                this::executeQueuedWebviewScript,
+                () -> !this.disposed && this.frontendReady
         );
         this.streamCoalescer = new StreamMessageCoalescer(new StreamMessageCoalescer.JsCallbackTarget() {
             @Override
-            public void callJavaScript(String functionName, String... args) {
-                ClaudeChatWindow.this.callJavaScript(functionName, args);
+            public boolean callJavaScript(String functionName, String... args) {
+                return ClaudeChatWindow.this.callJavaScript(functionName, args);
             }
 
             @Override
             public boolean isDisposed() {
                 return disposed;
+            }
+
+            @Override
+            public boolean isAvailable() {
+                // Mirrors the queue's own admission condition, and deliberately does not
+                // require frontendReady: the queue holds calls until the page is ready and
+                // drains them on the ready transition. Reporting "unavailable" there would
+                // make the coalescer park a snapshot the queue was perfectly able to keep,
+                // costing a re-serialize later for no benefit.
+                return !disposed && browser != null;
             }
 
             @Override
@@ -285,7 +304,8 @@ public class ClaudeChatWindow {
                 () -> frontendReady
         );
 
-        this.session = new ClaudeSession(project, claudeSDKBridge, codexSDKBridge, cliBridges, grokSDKBridge);
+        this.session = new ClaudeSession(
+                project, claudeSDKBridge, codexSDKBridge, cliBridges, grokSDKBridge, zcodeSDKBridge);
 
         this.chatWindowDelegate = new ChatWindowDelegate(createDelegateHost());
         chatWindowDelegate.loadPermissionModeFromSettings();
@@ -314,6 +334,11 @@ public class ClaudeChatWindow {
             @Override
             public GrokSDKBridge getGrokSDKBridge() {
                 return grokSDKBridge;
+            }
+
+            @Override
+            public ZcodeSDKBridge getZcodeSDKBridge() {
+                return zcodeSDKBridge;
             }
 
             @Override
@@ -1381,6 +1406,9 @@ public class ClaudeChatWindow {
     public GrokSDKBridge getGrokSDKBridge() {
         return grokSDKBridge;
     }
+    public ZcodeSDKBridge getZcodeSDKBridge() {
+        return zcodeSDKBridge;
+    }
 
     public CodexSDKBridge getCodexSDKBridge() {
         return codexSDKBridge;
@@ -1404,6 +1432,10 @@ public class ClaudeChatWindow {
 
     public OmpCliBridge getOmpCliBridge() {
         return ompCliBridge;
+    }
+
+    public MiniMaxCliBridge getMiniMaxCliBridge() {
+        return miniMaxCliBridge;
     }
 
     /**
@@ -1500,18 +1532,30 @@ public class ClaudeChatWindow {
             session.setReasoningEffort(savedState.reasoningEffort);
         }
 
-        String restoredSessionId = isNonEmpty(savedState.sessionId) ? savedState.sessionId : null;
-        String restoredCwd = isNonEmpty(savedState.cwd) ? savedState.cwd : session.getCwd();
+        boolean sameProject = TabSessionRestorePolicy.matchesProjectIdentity(
+                savedState,
+                project != null ? project.getBasePath() : null,
+                session.getCwd());
+        String restoredSessionId = sameProject && isNonEmpty(savedState.sessionId)
+                ? savedState.sessionId : null;
+        String restoredCwd = sameProject && isNonEmpty(savedState.cwd)
+                ? savedState.cwd : session.getCwd();
+        if (isNonEmpty(savedState.sessionId) && !sameProject) {
+            LOG.warn("[TabRestore] Ignoring persisted session from another project: savedProject="
+                    + savedState.projectPath + ", currentProject="
+                    + (project != null ? project.getBasePath() : null));
+        }
         session.setSessionInfo(restoredSessionId, restoredCwd);
         persistTabSessionState();
 
         LOG.info("[TabRestore] Restored tab session state: provider=" + savedState.provider
-                + ", sessionId=" + savedState.sessionId + ", cwd=" + savedState.cwd + ")");
+                + ", sessionId=" + restoredSessionId + ", cwd=" + restoredCwd + ")");
     }
 
     public void restorePersistedTabSessionState(TabStateService.TabSessionState savedState, boolean loadImmediately) {
         restorePersistedTabSessionState(savedState);
-        if (TabSessionRestorePolicy.shouldLoadImmediately(savedState, loadImmediately)) {
+        if (session != null && isNonEmpty(session.getSessionId())
+                && TabSessionRestorePolicy.shouldLoadImmediately(savedState, loadImmediately)) {
             loadRestoredHistoryIfNeeded(savedState);
         }
     }
@@ -1527,7 +1571,8 @@ public class ClaudeChatWindow {
     }
 
     private void loadRestoredHistoryIfNeeded(TabStateService.TabSessionState savedState) {
-        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady) || session == null) {
+        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady)
+                || session == null || !isNonEmpty(session.getSessionId())) {
             return;
         }
         if (!restoredHistoryLoadStarted.compareAndSet(false, true)) {
@@ -1537,6 +1582,10 @@ public class ClaudeChatWindow {
         ClaudeSession restoringSession = session;
         restoringSession.loadFromServer().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
             if (!disposed && session == restoringSession) {
+                if (!isNonEmpty(restoringSession.getSessionId())) {
+                    sessionId = resolveExposedSessionId(null, permissionServiceKey);
+                    persistTabSessionState();
+                }
                 callJavaScript("historyLoadComplete",
                         String.valueOf(restoringSession.getMessages().size()));
             }
@@ -1593,6 +1642,14 @@ public class ClaudeChatWindow {
         }
     }
 
+    private void replayCurrentSessionSnapshot(String reason) {
+        if (disposed || !frontendReady || session == null) {
+            return;
+        }
+        streamCoalescer.replayLatestSnapshot(session.getMessagesSnapshot());
+        LOG.debug("[WebviewTransport] Requested full transcript replay: reason=" + reason);
+    }
+
     private void updateFrontendReadyState(boolean ready) {
         FrontendReadyTransition transition = frontendReadyTransitions.update(ready);
         frontendReady = ready;
@@ -1602,8 +1659,15 @@ public class ClaudeChatWindow {
             return;
         }
         hasEverBeenFrontendReady = true;
+        webviewEventQueue.readyChanged();
         flushPendingCodeSnippet();
         flushPendingFileReferences();
+        // No transcript replay here: the only caller that passes true is
+        // handleFrontendReady, which replays immediately afterwards through
+        // replayCurrentSessionStateToFrontend — a superset that also restores the
+        // session id, loading/thinking flags and streaming state. Replaying here as
+        // well would serialize the whole transcript twice for one page load, and the
+        // first result is discarded by the resetDeliveryBaseline in between.
         ApplicationManager.getApplication().invokeLater(() -> {
             completeFrontendReadyUiUpdate(
                     disposed,
@@ -2124,15 +2188,27 @@ public class ClaudeChatWindow {
         webviewEventQueue.enqueueRaw(jsCode);
     }
 
-    private void executeQueuedWebviewScript(JBCefBrowser targetBrowser, String jsCode) {
-        if (this.disposed || this.browser != targetBrowser) {
-            return;
+    private boolean executeQueuedWebviewScript(
+            JBCefBrowser targetBrowser,
+            int expectedPageGeneration,
+            String jsCode
+    ) {
+        if (this.disposed
+                || this.browser != targetBrowser
+                || this.activePageGeneration != expectedPageGeneration) {
+            LOG.warn("Dropping queued webview script: browser/page changed or window disposed"
+                    + " (expectedPageGeneration=" + expectedPageGeneration
+                    + ", actualPageGeneration=" + this.activePageGeneration
+                    + ", scriptLength=" + (jsCode == null ? 0 : jsCode.length()) + ")");
+            return false;
         }
         try {
             org.cef.browser.CefBrowser cefBrowser = targetBrowser.getCefBrowser();
             cefBrowser.executeJavaScript(jsCode, cefBrowser.getURL(), 0);
+            return true;
         } catch (Exception | LinkageError e) {
             LOG.warn("Failed to execute queued webview JavaScript: " + e.getMessage(), e);
+            return false;
         }
     }
 
@@ -2141,12 +2217,12 @@ public class ClaudeChatWindow {
     private static final java.util.regex.Pattern SAFE_JS_FUNCTION_NAME =
             java.util.regex.Pattern.compile("^[a-zA-Z_$][a-zA-Z0-9_$.]*$");
 
-    void callJavaScript(String functionName, String... args) {
+    boolean callJavaScript(String functionName, String... args) {
         if (functionName == null || !SAFE_JS_FUNCTION_NAME.matcher(functionName).matches()) {
             LOG.error("Invalid JavaScript function name rejected: " + functionName);
-            return;
+            return false;
         }
-        webviewEventQueue.enqueue(functionName, args);
+        return webviewEventQueue.enqueue(functionName, args);
     }
 
     void handleJavaScriptMessage(int pageGeneration, String message) {
@@ -2292,7 +2368,8 @@ public class ClaudeChatWindow {
                     // bubble). DON'T drop it either, or a background-turn answer would
                     // stay invisible until the user reopens the session. Park the id
                     // and drain it at stream end (onStreamEnded).
-                    if (sessionCallbackAdapter != null && streamCoalescer != null && streamCoalescer.isStreamActive()) {
+                    if (sessionCallbackAdapter != null && streamCoalescer != null
+                            && (streamCoalescer.isStreamActive() || streamCoalescer.isSnapshotBuildPending())) {
                         deferredReload.defer(updatedSessionId);
                         // onStreamEnded drains this at the next stream-end. Also arm the
                         // safety backstop so a defer that races the stream-end edge — or
@@ -2407,23 +2484,30 @@ public class ClaudeChatWindow {
      * <ul>
      *   <li>{@code DONE} — disposed, or nothing parked (the fast onStreamEnded
      *       path already drained it): stop polling.</li>
-     *   <li>{@code RECHECK_LATER} — still parked but a stream is active:
-     *       reloading now would race the streaming append, so wait and re-check.</li>
+     *   <li>{@code RECHECK_LATER} — still parked but a stream or its final
+     *       snapshot is active: reloading now would race the stream or clear the
+     *       live state before the snapshot is queued, so wait and re-check.</li>
      *   <li>{@code DRAIN} — parked and the stream is idle: the safe point to
      *       drain, even though no onStreamEnded edge arrived for this defer.</li>
      * </ul>
      */
     enum SafetyDrainAction { DONE, RECHECK_LATER, DRAIN }
 
-    static SafetyDrainAction decideDeferredReloadSafety(boolean disposed, boolean hasPending, boolean streamActive) {
+    static SafetyDrainAction decideDeferredReloadSafety(
+            boolean disposed,
+            boolean hasPending,
+            boolean streamActive,
+            boolean snapshotBuildPending
+    ) {
         if (disposed || !hasPending) {
             return SafetyDrainAction.DONE;
         }
-        return streamActive ? SafetyDrainAction.RECHECK_LATER : SafetyDrainAction.DRAIN;
+        return streamActive || snapshotBuildPending
+                ? SafetyDrainAction.RECHECK_LATER : SafetyDrainAction.DRAIN;
     }
 
     static boolean shouldReconcileTranscriptAtStreamEnd(String provider, String sessionId) {
-        return "grok".equals(provider) && sessionId != null && !sessionId.isBlank();
+        return ("grok".equals(provider) || "zcode".equals(provider)) && sessionId != null && !sessionId.isBlank();
     }
 
     /** (Re)arm the safety backstop; overlapping arms collapse to one pending tick. */
@@ -2443,7 +2527,12 @@ public class ClaudeChatWindow {
      */
     private void deferredReloadSafetyTick() {
         boolean streamActive = streamCoalescer != null && streamCoalescer.isStreamActive();
-        switch (decideDeferredReloadSafety(disposed, deferredReload.hasPending(), streamActive)) {
+        boolean snapshotBuildPending = streamCoalescer != null && streamCoalescer.isSnapshotBuildPending();
+        switch (decideDeferredReloadSafety(
+                disposed,
+                deferredReload.hasPending(),
+                streamActive,
+                snapshotBuildPending)) {
             case DRAIN:
                 LOG.info("[ClaudeChatWindow] safety-draining deferred reload (no stream-end edge followed the defer)");
                 drainDeferredReload();
@@ -2600,8 +2689,8 @@ public class ClaudeChatWindow {
 
     private void onStreamEnded() {
         // Runs as the adapter's stream-end callback, already ordered after the
-        // final snapshot and the onStreamEnd signal have entered the webview
-        // queue — the safe point to reconcile and drain a deferred reload.
+        // final snapshot has been accepted by the webview queue and the
+        // onStreamEnd signal has been queued — the safe point to reconcile and drain a deferred reload.
         ClaudeSession current = this.session;
         if (current != null && shouldReconcileTranscriptAtStreamEnd(
                 current.getProvider(), current.getSessionId())) {
@@ -2672,6 +2761,8 @@ public class ClaudeChatWindow {
         }
 
         TabStateService.TabSessionState snapshot = new TabStateService.TabSessionState();
+        snapshot.projectPath = TabSessionRestorePolicy.normalizeProjectPath(
+                project.getBasePath());
         snapshot.provider = session.getProvider();
         snapshot.sessionId = session.getSessionId();
         snapshot.cwd = session.getCwd();
@@ -2878,6 +2969,17 @@ public class ClaudeChatWindow {
         } catch (Exception e) {
             LOG.warn("Failed to clean up Grok processes: " + e.getMessage());
         }
+        try {
+            if (zcodeSDKBridge != null) {
+                int activeCount = zcodeSDKBridge.getActiveProcessCount();
+                if (activeCount > 0) {
+                    LOG.info("Cleaning up " + activeCount + " active ZCode process(es)...");
+                }
+                zcodeSDKBridge.cleanupAllProcesses();
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to clean up ZCode processes: " + e.getMessage());
+        }
 
         try {
             if (targetBrowser != null) {
@@ -2955,12 +3057,20 @@ public class ClaudeChatWindow {
 
             @Override
             public void activatePageGeneration(int pageGeneration) {
-                if (activePageGeneration != pageGeneration) {
+                boolean generationChanged = activePageGeneration != pageGeneration;
+                if (generationChanged) {
                     surfaceRefreshCoordinator.invalidate();
                     cancelScheduledOsrSurfaceRefresh();
                     activePageGeneration = pageGeneration;
+                    webviewEventQueue.pageChanged();
+                    streamCoalescer.resetDeliveryBaseline();
                 }
                 dispatchGate.activatePageGeneration(pageGeneration);
+                if (generationChanged) {
+                    // After the dispatch gate: a replay failure must not leave the
+                    // new page's dispatch path closed.
+                    replayCurrentSessionSnapshot("page_generation_changed");
+                }
             }
 
             @Override
@@ -3040,11 +3150,14 @@ public class ClaudeChatWindow {
                 }
                 int count = restoring.getMessages().size();
                 if (streamCoalescer != null) {
-                    streamCoalescer.flush(seq -> {
-                        if (!disposed) {
-                            callJavaScript("historyLoadComplete", String.valueOf(count));
-                        }
-                    });
+                    // Same lock contract as enqueue: the flush may deep-copy live messages.
+                    synchronized (restoring.getState().getMessageStateLock()) {
+                        streamCoalescer.flush(seq -> {
+                            if (!disposed) {
+                                callJavaScript("historyLoadComplete", String.valueOf(count));
+                            }
+                        });
+                    }
                 } else {
                     callJavaScript("historyLoadComplete", String.valueOf(count));
                 }
@@ -3082,6 +3195,11 @@ public class ClaudeChatWindow {
             @Override
             public GrokSDKBridge getGrokSDKBridge() {
                 return grokSDKBridge;
+            }
+
+            @Override
+            public ZcodeSDKBridge getZcodeSDKBridge() {
+                return zcodeSDKBridge;
             }
 
             @Override

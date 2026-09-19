@@ -30,11 +30,6 @@ export function createTurnState(requestContext, runtime) {
     streamStarted: false,
     streamEnded: false,
     hasStreamEvents: false,
-    // True once any non-result message has been processed this turn. A closing
-    // SUCCESS result arriving with this still false is provably foreign (a real
-    // run emits output before its result) and is skipped rather than ending the
-    // turn empty — see the foreign-result skip in executeTurn (#1410).
-    sawTurnMessage: false,
     lastAssistantContent: '',
     lastThinkingContent: '',
     textBlockContentByIndex: new Map(),
@@ -55,10 +50,9 @@ export function processStreamEvent(msg, turnState) {
     // duplicate this turn's index-0 block (see resetTurnBlockState). Usage still
     // accumulates across turns.
     resetTurnBlockState(turnState);
-    // Emit BLOCK_RESET signal BEFORE any subsequent deltas to ensure frontend
-    // clears its streaming refs (streamingThinkingRef, streamingContentRef).
-    // This prevents new turn's thinking/text from merging with previous turn's content.
-    // Must emit synchronously here, not in the delta handlers, to guarantee ordering.
+    // Emit BLOCK_RESET before subsequent deltas so the frontend can record the
+    // new block's offset while retaining cumulative buffers for earlier blocks.
+    // Emit it here, rather than in a delta handler, to guarantee ordering.
     if (turnState.streamingEnabled) {
       process.stdout.write('[BLOCK_RESET]\n');
     }
