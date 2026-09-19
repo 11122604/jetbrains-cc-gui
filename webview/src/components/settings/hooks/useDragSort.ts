@@ -70,13 +70,20 @@ const defaultResolveDropTarget = (x: number, y: number): DropTarget | null => {
  * `getContainer()` into three zones: the outer `edgeRatio` of its height on
  * each side maps to an insert slot ('before' / 'after'), the middle maps to
  * 'on'. Gaps between rows and the container's top/bottom padding map to the
- * adjacent slot, so the first and last slots are reachable. Outside the
- * container's rect the resolver returns null (drop cancels).
+ * adjacent slot, so the first and last slots are reachable. Horizontally
+ * outside the container the resolver returns null (drop cancels); vertically
+ * it tolerates `DROP_EDGE_TOLERANCE_PX` of overshoot and clamps into the
+ * nearest edge slot, because auto-scroll deliberately scrolls while the
+ * pointer sits beyond the top/bottom edge and releasing there must not
+ * silently cancel the drag.
  *
  * Placement is computed in DOM order. When rows are rendered in reverse of
  * `items` order, pass `reversed: true` so 'before' / 'after' are flipped into
  * `items` order, which is what the hook's sort expects.
  */
+/** Vertical overshoot (px) beyond the container that still resolves to the nearest edge slot. */
+const DROP_EDGE_TOLERANCE_PX = 24;
+
 export const createEdgeInsertResolver = (
   getContainer: () => HTMLElement | null,
   options: { edgeRatio?: number; reversed?: boolean } = {},
@@ -90,21 +97,23 @@ export const createEdgeInsertResolver = (
     const container = getContainer();
     if (!container) return null;
     const bounds = container.getBoundingClientRect();
-    if (x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom) return null;
+    if (x < bounds.left || x > bounds.right) return null;
+    if (y < bounds.top - DROP_EDGE_TOLERANCE_PX || y > bounds.bottom + DROP_EDGE_TOLERANCE_PX) return null;
+    const clampedY = Math.min(Math.max(y, bounds.top), bounds.bottom);
 
     let lastId: string | null = null;
     for (const row of container.querySelectorAll<HTMLElement>('[data-drag-sort-id]')) {
       const id = row.dataset.dragSortId;
       if (!id) continue;
       const rect = row.getBoundingClientRect();
-      if (y < rect.top) {
+      if (clampedY < rect.top) {
         // Gap above this row (or the container's top padding).
         return { id, placement: flip('before') };
       }
-      if (y <= rect.bottom) {
+      if (clampedY <= rect.bottom) {
         const edge = rect.height * edgeRatio;
-        if (y < rect.top + edge) return { id, placement: flip('before') };
-        if (y > rect.bottom - edge) return { id, placement: flip('after') };
+        if (clampedY < rect.top + edge) return { id, placement: flip('before') };
+        if (clampedY > rect.bottom - edge) return { id, placement: flip('after') };
         return { id, placement: 'on' };
       }
       lastId = id;
@@ -142,7 +151,11 @@ const applyDropTarget = <T extends DragSortItem>(list: T[], draggedId: string, t
 };
 
 const isInteractiveTarget = (target: EventTarget | null): boolean => {
-  return target instanceof Element && target.closest('button, a, input, textarea, select, [role="button"]') !== null;
+  if (!(target instanceof Element)) return false;
+  // The drag handle is focusable (role="button") for keyboard reordering, but
+  // it initiates the pointer drag itself, so it must not block that drag.
+  if (target.closest('[data-drag-sort-handle]') !== null) return false;
+  return target.closest('button, a, input, textarea, select, [role="button"]') !== null;
 };
 
 // Strip identifiers / form state from the cloned subtree so the floating preview
@@ -214,7 +227,12 @@ export function useDragSort<T extends DragSortItem>({
   const dragPreviewOffsetRef = useRef({ x: 0, y: 0 });
   // Read through a ref so pointer listeners registered at pointerdown always use the latest resolver.
   const resolveDropTargetRef = useRef(resolveDropTarget ?? defaultResolveDropTarget);
-  resolveDropTargetRef.current = resolveDropTarget ?? defaultResolveDropTarget;
+  useEffect(() => {
+    resolveDropTargetRef.current = resolveDropTarget ?? defaultResolveDropTarget;
+  }, [resolveDropTarget]);
+  // Last pointer position during a pointer-based drag; used to re-resolve the
+  // drop target when a container scrolls under a stationary pointer.
+  const lastPointerPosRef = useRef<{ x: number; y: number } | null>(null);
 
   // Sync localItems from props
   useEffect(() => {
@@ -233,6 +251,7 @@ export function useDragSort<T extends DragSortItem>({
     dragPreviewRef.current?.remove();
     dragPreviewRef.current = null;
     draggedIdRef.current = null;
+    lastPointerPosRef.current = null;
     setDraggedId(null);
     setDragOverId(null);
     setDragOverPlacement(null);
@@ -292,6 +311,7 @@ export function useDragSort<T extends DragSortItem>({
 
     pointerAbortRef.current?.abort();
     draggedIdRef.current = id;
+    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
     setDraggedId(id);
     setDragOverId(null);
     dragPreviewRef.current?.remove();
@@ -306,8 +326,18 @@ export function useDragSort<T extends DragSortItem>({
       if (dragPreviewRef.current) {
         moveDragPreview(dragPreviewRef.current, event.clientX, event.clientY, dragPreviewOffsetRef.current);
       }
+      lastPointerPosRef.current = { x: event.clientX, y: event.clientY };
       updateDragOver(resolveDropTargetRef.current(event.clientX, event.clientY));
     }, { signal: abortController.signal });
+
+    // Auto-scroll moves rows under a stationary pointer without firing
+    // pointermove; re-resolve on scroll so the highlight tracks the real slot.
+    window.addEventListener('scroll', () => {
+      const pos = lastPointerPosRef.current;
+      if (pos) {
+        updateDragOver(resolveDropTargetRef.current(pos.x, pos.y));
+      }
+    }, { capture: true, signal: abortController.signal });
 
     window.addEventListener('pointerup', (event) => {
       const target = resolveDropTargetRef.current(event.clientX, event.clientY);

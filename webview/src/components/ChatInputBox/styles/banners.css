@@ -218,7 +218,7 @@
   right: 0;
   height: 2px;
   border-radius: 1px;
-  background: #0078d4;
+  background: var(--accent-primary);
   pointer-events: none;
 }
 
@@ -239,9 +239,9 @@
 
 /* Drag state: item currently hovered as drop target */
 .message-queue-item.drag-over {
-  border-color: #0078d4;
+  border-color: var(--accent-primary);
   border-style: dashed;
-  background: rgba(0, 120, 212, 0.05);
+  background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
 }
 
 /* Drag handle (gripper icon) used to reorder queue items */
@@ -269,6 +269,10 @@
 
 .message-queue-drag-handle:active {
   cursor: grabbing;
+}
+.message-queue-drag-handle:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -1px;
 }
 
 .message-queue-drag-handle .codicon {

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef } from 'react';
+import type { KeyboardEvent } from 'react';
 import type { QueuedMessage } from '../../hooks/useMessageQueue';
 import { createEdgeInsertResolver, useDragSort } from '../settings/hooks/useDragSort';
 import { useDragAutoScroll } from './hooks/useDragAutoScroll.js';
@@ -28,6 +29,22 @@ export function MessageQueue({ queue, onRemove, onReorder }: MessageQueueProps) 
   const handleSort = useCallback((orderedIds: string[]) => {
     onReorder?.(orderedIds);
   }, [onReorder]);
+  /**
+   * Keyboard reorder for the drag handle: the list renders reversed (queue[0]
+   * at the bottom), so ArrowUp moves the message later in the queue (visually
+   * up) and ArrowDown moves it earlier (visually down).
+   */
+  const handleReorderKeyDown = useCallback((e: KeyboardEvent, id: string) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const index = queue.findIndex(item => item.id === id);
+    const swapIndex = e.key === 'ArrowUp' ? index + 1 : index - 1;
+    if (index === -1 || swapIndex < 0 || swapIndex >= queue.length) return;
+    const next = [...queue];
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+    onReorder?.(next.map(item => item.id));
+  }, [queue, onReorder]);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -78,7 +95,12 @@ export function MessageQueue({ queue, onRemove, onReorder }: MessageQueueProps) 
             {canReorder && (
               <div
                 className="message-queue-drag-handle"
-                title="Drag to reorder"
+                data-drag-sort-handle
+                role="button"
+                tabIndex={0}
+                aria-label={`Reorder message ${queuePosition}`}
+                title="Drag to reorder, or focus and use arrow keys"
+                onKeyDown={(e) => handleReorderKeyDown(e, item.id)}
                 onPointerDown={(e) => handlePointerDown(e, item.id, e.currentTarget.closest<HTMLElement>('[data-drag-sort-id]'))}
               >
                 <span className="codicon codicon-gripper" />
