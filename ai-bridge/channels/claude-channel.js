@@ -77,7 +77,11 @@ export async function handleClaudeCommand(command, args, stdinData) {
       const sessionId = stdinData?.sessionId || args[0];
       const cwd = stdinData?.cwd || args[1] || null;
       const beforeTurnRaw = stdinData?.beforeTurn ?? (args[2] !== '' && args[2] !== undefined ? args[2] : null);
-      const parsedBeforeTurn = Number(beforeTurnRaw);
+      const parsedBeforeTurn = typeof beforeTurnRaw === 'number'
+        ? beforeTurnRaw
+        : typeof beforeTurnRaw === 'string' && beforeTurnRaw.trim()
+          ? Number(beforeTurnRaw)
+          : null;
       const beforeTurn = Number.isInteger(parsedBeforeTurn) && parsedBeforeTurn >= 0 ? parsedBeforeTurn : null;
       const parsedLimit = Number(stdinData?.limit ?? args[3]);
       const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 200) : 30;
