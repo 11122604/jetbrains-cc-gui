@@ -39,43 +39,44 @@ export const useAskUserQuestionState = ({
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [hydratedRequestKey, setHydratedRequestKey] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isOpen || !request) {
-      setHydratedRequestKey(null);
-      return;
-    }
-
-    const { initialAnswers, initialCustomInputs } = buildInitialAnswerState(request);
-    const draft = readDialogDraft<AskUserQuestionDraft>('askUserQuestion', request.requestId, request.deadlineMs, request.dialogToken);
-    if (draft?.answers) {
-      for (const [question, labels] of Object.entries(draft.answers)) {
-        if (Array.isArray(labels)) {
-          initialAnswers[question] = new Set(labels.filter((label): label is string => typeof label === 'string'));
+  // Hydrate draft state exactly once per request via render-time adjustment:
+  // the key is derived during render and the previous-key state tracks which
+  // request has already been hydrated (no effect chain, no extra commit).
+  const requestKey = isOpen && request ? request.dialogToken ?? request.requestId : null;
+  if (hydratedRequestKey !== requestKey) {
+    setHydratedRequestKey(requestKey);
+    if (requestKey !== null && request) {
+      const { initialAnswers, initialCustomInputs } = buildInitialAnswerState(request);
+      const draft = readDialogDraft<AskUserQuestionDraft>('askUserQuestion', request.requestId, request.deadlineMs, request.dialogToken);
+      if (draft?.answers) {
+        for (const [question, labels] of Object.entries(draft.answers)) {
+          if (Array.isArray(labels)) {
+            initialAnswers[question] = new Set(labels.filter((label): label is string => typeof label === 'string'));
+          }
         }
       }
-    }
-    if (draft?.customInputs && typeof draft.customInputs === 'object') {
-      for (const [question, value] of Object.entries(draft.customInputs)) {
-        if (typeof value === 'string') {
-          initialCustomInputs[question] = value.slice(0, MAX_CUSTOM_INPUT_LENGTH);
+      if (draft?.customInputs && typeof draft.customInputs === 'object') {
+        for (const [question, value] of Object.entries(draft.customInputs)) {
+          if (typeof value === 'string') {
+            initialCustomInputs[question] = value.slice(0, MAX_CUSTOM_INPUT_LENGTH);
+          }
         }
       }
+      setAnswers(initialAnswers);
+      setCustomInputs(initialCustomInputs);
+      setCurrentQuestionIndex(
+        typeof draft?.currentQuestionIndex === 'number' && Number.isInteger(draft.currentQuestionIndex)
+          ? Math.max(0, draft.currentQuestionIndex)
+          : 0,
+      );
+      setIsCollapsed(draft?.isCollapsed === true);
     }
-    setAnswers(initialAnswers);
-    setCustomInputs(initialCustomInputs);
-    setCurrentQuestionIndex(
-      typeof draft?.currentQuestionIndex === 'number' && Number.isInteger(draft.currentQuestionIndex)
-        ? Math.max(0, draft.currentQuestionIndex)
-        : 0,
-    );
-    setIsCollapsed(draft?.isCollapsed === true);
-    setHydratedRequestKey(request.dialogToken ?? request.requestId);
-  }, [isOpen, request?.requestId, request?.dialogToken, request?.deadlineMs]);
+  }
 
   useEffect(() => {
     const requestId = request?.requestId;
     const deadlineMs = request?.deadlineMs;
-    if (!isOpen || requestId === undefined || hydratedRequestKey !== (request?.dialogToken ?? requestId)) {
+    if (!isOpen || requestId === undefined) {
       return;
     }
     const serializedAnswers: Record<string, string[]> = {};
@@ -94,7 +95,6 @@ export const useAskUserQuestionState = ({
     answers,
     customInputs,
     currentQuestionIndex,
-    hydratedRequestKey,
     isCollapsed,
     isOpen,
     request?.requestId,
