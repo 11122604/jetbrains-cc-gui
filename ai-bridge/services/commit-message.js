@@ -212,16 +212,15 @@ async function generateWithClaudeAsk(prompt, model, config) {
  * Anthropic-compatible endpoints (DeepSeek) intermittently return empty text on
  * the streaming protocol; the plain create() JSON response maps text blocks
  * reliably. Retries once on an empty result to absorb transient flakiness.
+ * Exposed for tests.
  */
-async function askClaudeNonStreaming(client, modelId, prompt) {
+export async function askClaudeNonStreaming(client, modelId, prompt) {
   const ATTEMPTS = 2;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     console.log(`[CommitMessage] Non-streaming messages.create() attempt ${attempt}/${ATTEMPTS}...`);
-    const response = await client.messages.create({
-      model: modelId,
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: prompt }],
-    });
+    // Same request shape as the streaming ask path: reasoning models (DeepSeek)
+    // otherwise spend the whole budget on thinking blocks and emit no text.
+    const response = await client.messages.create(buildCommitAskRequest(modelId, prompt));
     let text = '';
     if (response && Array.isArray(response.content)) {
       for (const block of response.content) {
