@@ -6,7 +6,7 @@
  *
  * Key Differences from Claude:
  * - Uses threadId instead of sessionId
- * - Permission model: skipGitRepoCheck + sandbox (not permissionMode string)
+ * - Permission model: skipGitRepoCheck + sandbox + approvalPolicy + native reviewer config
  * - Events: thread.*, turn.*, item.* (not system/assistant/user/result)
  * - Supports images via local_image type (requires file paths)
  *
@@ -26,14 +26,39 @@ import {
   resolveSandboxModeOverride,
   resolveApprovalPolicyOverride,
   buildCodexCliEnvironment,
+  applyCodexApprovalsReviewerConfig,
+  isCodexNativeAutoReviewSupported,
+  CODEX_NATIVE_AUTO_REVIEW_MIN_VERSION,
   buildErrorPayload
 } from './codex-utils.js';
+import { getInstalledSdkVersion } from '../../utils/sdk-loader.js';
 import { collectAgentsInstructions } from './codex-agents-loader.js';
 import {
   createInitialEventState,
   prepareSessionReplayBoundary,
   processCodexEventStream,
 } from './codex-event-handler.js';
+
+// Codex CLI rejects empty stdin even when --image is present.
+const EMPTY_PROMPT_SENTINEL = '\u2063';
+
+export function buildCodexRunInput(message, attachments = []) {
+  const text = typeof message === 'string' ? message : '';
+  const imageInputs = Array.isArray(attachments)
+    ? attachments
+        .filter((attachment) => attachment?.type === 'local_image' && attachment.path)
+        .map((attachment) => ({ type: 'local_image', path: attachment.path }))
+    : [];
+
+  if (imageInputs.length === 0) {
+    return text;
+  }
+
+  return [
+    { type: 'text', text: text.trim() ? text : EMPTY_PROMPT_SENTINEL },
+    ...imageInputs,
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // sendMessage
@@ -99,6 +124,16 @@ export async function sendMessage(
     const sdk = await ensureCodexSdk();
     const Codex = sdk.Codex || sdk.default || sdk;
 
+    if (normalizedPermissionMode === 'auto') {
+      const installedVersion = getInstalledSdkVersion('codex-sdk');
+      if (!isCodexNativeAutoReviewSupported(installedVersion)) {
+        throw new Error(
+          `Codex native auto review requires @openai/codex-sdk >= ${CODEX_NATIVE_AUTO_REVIEW_MIN_VERSION}`
+          + ` (installed: ${installedVersion || 'unknown'}). Please update it in Settings > Dependencies.`
+        );
+      }
+    }
+
     const codexOptions = {};
 
     // Always initialize config with reasoning summaries forced to true
@@ -134,8 +169,6 @@ export async function sendMessage(
       removedCount: removedKeys.length
     }));
 
-    const codex = new Codex(codexOptions);
-
     // ============================================================
     // 2. Map Unified Permission Mode to Codex Format
     // ============================================================
@@ -148,17 +181,29 @@ export async function sendMessage(
       CODEX_APPROVAL_POLICY: process.env.CODEX_APPROVAL_POLICY || ''
     }));
 
-    // Allow Java side to force sandbox mapping override via env vars
+    const isNativeAutoReview = normalizedPermissionMode === 'auto';
     const sandboxOverride = resolveSandboxModeOverride();
-    if (sandboxOverride) {
+    if (sandboxOverride && !isNativeAutoReview) {
       permissionConfig.sandbox = sandboxOverride;
       logDebug('PERM_DEBUG', 'Sandbox override from env CODEX_SANDBOX_MODE:', sandboxOverride);
+    } else if (sandboxOverride && isNativeAutoReview) {
+      logDebug('PERM_DEBUG', 'Ignoring sandbox override for native auto review:', sandboxOverride);
     }
     const approvalPolicyOverride = resolveApprovalPolicyOverride();
-    if (approvalPolicyOverride) {
+    if (approvalPolicyOverride && !isNativeAutoReview) {
       permissionConfig.approvalPolicy = approvalPolicyOverride;
       logDebug('PERM_DEBUG', 'Approval override from env CODEX_APPROVAL_POLICY:', approvalPolicyOverride);
+    } else if (approvalPolicyOverride && isNativeAutoReview) {
+      logDebug('PERM_DEBUG', 'Ignoring approval override for native auto review:', approvalPolicyOverride);
     }
+
+    if (isNativeAutoReview) {
+      permissionConfig.sandbox = 'workspace-write';
+      permissionConfig.approvalPolicy = 'on-request';
+    }
+
+    applyCodexApprovalsReviewerConfig(codexOptions, permissionConfig);
+    const codex = new Codex(codexOptions);
 
     // ============================================================
     // 3. Build Thread Options
@@ -238,18 +283,15 @@ export async function sendMessage(
     // 6. Build Input and Start Streaming
     // ============================================================
 
-    let runInput;
-    if (attachments && Array.isArray(attachments) && attachments.length > 0) {
-      runInput = [{ type: 'text', text: finalMessage }];
-      for (const attachment of attachments) {
-        if (attachment && attachment.type === 'local_image' && attachment.path) {
-          runInput.push({ type: 'local_image', path: attachment.path });
-          console.log('[DEBUG] Added local_image attachment:', attachment.path);
+    const runInput = buildCodexRunInput(finalMessage, attachments);
+    if (Array.isArray(runInput)) {
+      for (const item of runInput) {
+        if (item.type === 'local_image') {
+          console.log('[DEBUG] Added local_image attachment:', item.path);
         }
       }
       console.log('[DEBUG] Using array input format with', runInput.length, 'entries');
     } else {
-      runInput = finalMessage;
       console.log('[DEBUG] Using string input format');
     }
 

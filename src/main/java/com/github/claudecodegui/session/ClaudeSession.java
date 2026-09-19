@@ -6,6 +6,7 @@ import com.github.claudecodegui.provider.claude.ClaudeSDKBridge;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.grok.GrokSDKBridge;
 import com.github.claudecodegui.provider.common.MarkerCliBridge;
+import com.github.claudecodegui.provider.zcode.ZcodeSDKBridge;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
@@ -50,6 +51,7 @@ public class ClaudeSession {
     private final com.github.claudecodegui.session.EditorContextCollector contextCollector;
     private final SessionContextService contextService;
     private final GrokSDKBridge grokSDKBridge;
+    private final ZcodeSDKBridge zcodeSDKBridge;
     private final SessionProviderRouter providerRouter;
     private final SessionSendService sendService;
     private final SessionMessageOrchestrator messageOrchestrator;
@@ -73,17 +75,9 @@ public class ClaudeSession {
         }
 
         public Type type;
-        // The streaming handler thread reassigns these on every assistant update
-        // (e.g. `raw = mergedRaw`, `content = builder.toString()`) while
-        // StreamMessageCoalescer serializes the same Message off-EDT — enqueue only
-        // shallow-copies the list, so elements are shared across threads. Without
-        // volatile the serializer could read a stale reference and publish a snapshot
-        // predating a just-reassigned tool_use block, which the frontend's structural
-        // merge (it takes blocks from the new snapshot only) would then freeze as
-        // missing.
-        // This covers the reassignment race, the dominant mutation pattern. Note:
-        // a few call sites still mutate the JsonObject in place (turnUsage / uuid /
-        // usage stamps in ClaudeMessageHandler); those are a separate concern.
+        // Provider callbacks and history reloads share SessionState's message lock;
+        // transport snapshots are captured while that lock is held before any async
+        // serialization begins.
         public volatile String content;
         public long timestamp;
         public volatile JsonObject raw; // Raw message data from SDK
@@ -139,8 +133,8 @@ public class ClaudeSession {
         /**
          * Called when a block reset signal is received during streaming.
          * This indicates a new assistant message has started within the stream
-         * (e.g., after a tool_use loop iteration), and the frontend should
-         * clear its streaming content refs to prevent cross-turn content merging.
+         * (e.g., after a tool_use loop iteration), so the frontend can record
+         * the boundary while retaining cumulative streaming content for reconciliation.
          */
         default void onBlockReset() {
         }
@@ -172,8 +166,19 @@ public class ClaudeSession {
          * @param fromTurn the first turn index in the current page
          * @param totalTurns total number of turns in the session
          * @param hasMore whether there are more pages to load
+         * @param cursorReset true when the server rejected the client cursor and
+         *        returned the latest page instead; the client must treat the
+         *        current transcript as replaced, not prepended
          */
-        default void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore) {
+        default void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset) {
+        }
+
+        /**
+         * Called when an earlier Claude history page fails to load.
+         * @param sessionId the session ID, or null when unknown
+         * @param message human-readable error description
+         */
+        default void onClaudeHistoryPageError(String sessionId, String message) {
         }
     }
 
@@ -193,6 +198,17 @@ public class ClaudeSession {
             Map<String, MarkerCliBridge> cliBridges,
             GrokSDKBridge grokSDKBridge
     ) {
+        this(project, claudeSDKBridge, codexSDKBridge, cliBridges, grokSDKBridge, null);
+    }
+
+    public ClaudeSession(
+            Project project,
+            ClaudeSDKBridge claudeSDKBridge,
+            CodexSDKBridge codexSDKBridge,
+            Map<String, MarkerCliBridge> cliBridges,
+            GrokSDKBridge grokSDKBridge,
+            ZcodeSDKBridge zcodeSDKBridge
+    ) {
         this.project = project;
         this.claudeSDKBridge = claudeSDKBridge;
         this.codexSDKBridge = codexSDKBridge;
@@ -205,7 +221,9 @@ public class ClaudeSession {
         this.callbackFacade = new SessionCallbackFacade(project);
         this.contextService = new SessionContextService(project);
         this.grokSDKBridge = grokSDKBridge;
-        this.providerRouter = new SessionProviderRouter(claudeSDKBridge, codexSDKBridge, cliBridges, this.grokSDKBridge);
+        this.zcodeSDKBridge = zcodeSDKBridge;
+        this.providerRouter = new SessionProviderRouter(
+                claudeSDKBridge, codexSDKBridge, cliBridges, this.grokSDKBridge, this.zcodeSDKBridge);
         this.sendService = new SessionSendService(
                 project,
                 state,
@@ -217,7 +235,8 @@ public class ClaudeSession {
                 codexSDKBridge,
                 cliBridges,
                 contextService,
-                this.grokSDKBridge);
+                this.grokSDKBridge,
+                this.zcodeSDKBridge);
         this.messageOrchestrator = new SessionMessageOrchestrator(
                 project,
                 state,
@@ -292,6 +311,15 @@ public class ClaudeSession {
 
     public List<Message> getMessages() {
         return state.getMessages();
+    }
+
+    /**
+     * Return a deep snapshot that can safely cross asynchronous transport boundaries.
+     *
+     * @return an independent message snapshot
+     */
+    public List<Message> getMessagesSnapshot() {
+        return state.getMessagesSnapshot();
     }
 
     /**
@@ -709,27 +737,32 @@ public class ClaudeSession {
      * Maps frontend permission mode strings to PermissionManager enum values.
      */
     public void setPermissionMode(String mode) {
-        state.setPermissionMode(mode);
+        String normalizedMode = mode != null ? mode.trim() : null;
+        if ("autoEdit".equals(normalizedMode)) {
+            normalizedMode = "acceptEdits";
+        }
+        state.setPermissionMode(normalizedMode);
 
         // Sync PermissionManager mode with frontend mode:
         // - "default" -> DEFAULT (ask every time)
-        // - "acceptEdits"/"autoEdit" -> ACCEPT_EDITS (agent mode, auto-accept file edits)
-        // - "bypassPermissions" -> ALLOW_ALL (auto mode, bypass all permission checks)
-        // - "plan" -> DENY_ALL (plan mode, not yet supported)
+        // - "auto" -> DEFAULT (the provider reviewer decides first; residual requests still ask)
+        // - "acceptEdits" (legacy "autoEdit") -> ACCEPT_EDITS (agent mode, auto-accept file edits)
+        // - "bypassPermissions" -> ALLOW_ALL (full auto, bypass all permission checks)
+        // - "plan" -> DENY_ALL (plan mode, read-only tool policy)
         PermissionManager.PermissionMode pmMode;
-        if ("bypassPermissions".equals(mode)) {
+        if ("bypassPermissions".equals(normalizedMode)) {
             pmMode = PermissionManager.PermissionMode.ALLOW_ALL;
-            LOG.info("Permission mode set to ALLOW_ALL for mode: " + mode);
-        } else if ("acceptEdits".equals(mode) || "autoEdit".equals(mode)) {
+            LOG.info("Permission mode set to ALLOW_ALL for mode: " + normalizedMode);
+        } else if ("acceptEdits".equals(normalizedMode)) {
             pmMode = PermissionManager.PermissionMode.ACCEPT_EDITS;
-            LOG.info("Permission mode set to ACCEPT_EDITS for mode: " + mode);
-        } else if ("plan".equals(mode)) {
+            LOG.info("Permission mode set to ACCEPT_EDITS for mode: " + normalizedMode);
+        } else if ("plan".equals(normalizedMode)) {
             pmMode = PermissionManager.PermissionMode.DENY_ALL;
-            LOG.info("Permission mode set to DENY_ALL for mode: " + mode);
+            LOG.info("Permission mode set to DENY_ALL for mode: " + normalizedMode);
         } else {
-            // "default" or other unknown modes
+            // Default asks directly; native auto reaches Java only when the provider reviewer escalates.
             pmMode = PermissionManager.PermissionMode.DEFAULT;
-            LOG.info("Permission mode set to DEFAULT for mode: " + mode);
+            LOG.info("Permission mode set to DEFAULT for mode: " + normalizedMode);
         }
 
         permissionManager.setPermissionMode(pmMode);

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentProps } from 'react';
+import { useState, type ComponentProps } from 'react';
 import { useTranslation } from 'react-i18next';
 import ConfirmDialog from './ConfirmDialog';
 import PermissionDialog from './PermissionDialog';
@@ -64,6 +64,8 @@ export interface AppDialogsProps {
   currentProvider: string;
   /** Permission dialog timeout in seconds (from backend config). */
   permissionDialogTimeoutSeconds?: number;
+  /** Apply the execution mode chosen while approving a Claude plan. */
+  onPlanApprovalModeChange?: (mode: string) => void;
 }
 
 /**
@@ -86,6 +88,7 @@ export const AppDialogs = ({
   onRewindCancel,
   currentProvider,
   permissionDialogTimeoutSeconds = DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS,
+  onPlanApprovalModeChange,
 }: AppDialogsProps) => {
   const { t } = useTranslation();
   const {
@@ -107,11 +110,14 @@ export const AppDialogs = ({
   // Resets to unchecked every time the dialog re-opens so the user re-affirms
   // intent each time they want to silence it.
   const [skipNewSessionAgain, setSkipNewSessionAgain] = useState(false);
-  useEffect(() => {
+  // Reset via render-time adjustment whenever the dialog (re-)opens.
+  const [prevShowNewSessionConfirm, setPrevShowNewSessionConfirm] = useState(showNewSessionConfirm);
+  if (prevShowNewSessionConfirm !== showNewSessionConfirm) {
+    setPrevShowNewSessionConfirm(showNewSessionConfirm);
     if (showNewSessionConfirm) {
       setSkipNewSessionAgain(false);
     }
-  }, [showNewSessionConfirm]);
+  }
 
   const handleConfirmNewSessionWithSkip = () => {
     if (skipNewSessionAgain) {
@@ -123,7 +129,7 @@ export const AppDialogs = ({
   // Note: We deliberately do NOT persist the "don't ask again" checkbox when the
   // user cancels the dialog. A cancelled dialog means they did not intend the
   // destructive action AND did not intend to change the preference. The state is
-  // discarded via the useEffect above on next open.
+  // discarded via the render-time adjustment above on next open.
 
   return (
     <>
@@ -172,7 +178,10 @@ export const AppDialogs = ({
       <PlanApprovalDialog
         isOpen={planApprovalDialogOpen}
         request={currentPlanApprovalRequest}
-        onApprove={handlePlanApprovalApprove}
+        onApprove={(requestId, targetMode) => {
+          handlePlanApprovalApprove(requestId, targetMode);
+          onPlanApprovalModeChange?.(targetMode);
+        }}
         onReject={handlePlanApprovalReject}
         timeoutSeconds={permissionDialogTimeoutSeconds}
       />

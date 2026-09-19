@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ProviderModelIcon } from '../../shared/ProviderModelIcon';
 import { copyToClipboard } from '../../../utils/copyUtils';
-import { openBrowser } from '../../../utils/bridge';
-import DshConnectionCard from './DshConnectionCard';
+import { openBrowserExternal } from '../../../utils/bridge';
+import CliToolList from './CliToolList';
+import InstallDialog from './InstallDialog';
+import { useHiddenCliProviders } from '../../../hooks/useCliProviderVisibility';
+import { setCliProviderHidden } from '../../../utils/cliProviderVisibility';
 import {
   CLI_TOOL_DEFINITIONS,
   type CliStatusMap,
@@ -16,97 +18,6 @@ import styles from './style.module.less';
 interface CliSectionProps {
   addToast?: (message: string, type: 'info' | 'success' | 'warning' | 'error') => void;
 }
-
-interface CliToolCardProps {
-  tool: CliToolDefinition;
-  status?: CliToolStatus;
-  onOpenInstall: (id: CliToolId) => void;
-  onOpenDocs: (url: string) => void;
-}
-
-const CliToolCard = ({ tool, status, onOpenInstall, onOpenDocs }: CliToolCardProps) => {
-  const { t } = useTranslation();
-  const installed = status?.installed === true;
-  const version = status?.version;
-  const path = status?.path;
-  const description = t(tool.descriptionKey);
-  // Prefer path when installed; fall back to description for missing tools.
-  const meta = installed && path ? path : description;
-  const metaTitle = installed && path
-    ? `${description}\n${path}`
-    : description;
-  const howToInstallLabel = t('settings.cli.howToInstall');
-  const openDocsLabel = t('settings.cli.installDialog.openDocs');
-
-  return (
-    <div
-      className={`${styles.cliCard} ${installed ? styles.installed : styles.missing}`}
-    >
-      <div className={styles.cliMain} title={metaTitle}>
-        <div className={styles.cliIcon}>
-          <ProviderModelIcon providerId={tool.id} size={16} colored />
-        </div>
-
-        <span className={styles.cliName}>{t(tool.nameKey)}</span>
-        {installed && version && (
-          <span className={styles.versionBadge}>v{version}</span>
-        )}
-        {!installed && (
-          <span className={styles.binaryChip}>{tool.binaryName}</span>
-        )}
-        <span className={styles.cliMeta}>{meta}</span>
-      </div>
-
-      <div className={styles.cliActions}>
-        {installed ? (
-          <>
-            <span className={`${styles.statusBadge} ${styles.ok}`}>
-              <span className="codicon codicon-check" aria-hidden="true" />
-              {t('settings.cli.status.installed')}
-            </span>
-            <span className={styles.divider} aria-hidden="true" />
-            <div className={styles.actionButtons}>
-              <button
-                type="button"
-                className={styles.iconBtn}
-                onClick={() => onOpenInstall(tool.id)}
-                data-tooltip={howToInstallLabel}
-                title={howToInstallLabel}
-                aria-label={howToInstallLabel}
-              >
-                <span className="codicon codicon-book" />
-              </button>
-              <button
-                type="button"
-                className={styles.iconBtn}
-                onClick={() => onOpenDocs(tool.docsUrl)}
-                data-tooltip={openDocsLabel}
-                title={openDocsLabel}
-                aria-label={openDocsLabel}
-              >
-                <span className="codicon codicon-link-external" />
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <span className={`${styles.statusBadge} ${styles.missing}`}>
-              {t('settings.cli.status.notInstalled')}
-            </span>
-            <button
-              type="button"
-              className={styles.primaryBtn}
-              onClick={() => onOpenInstall(tool.id)}
-            >
-              <span className="codicon codicon-desktop-download" aria-hidden="true" />
-              {t('settings.cli.viewInstallGuide')}
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
 
 /** Java may not answer get_cli_status (handler absent) — show an error instead of spinning forever. */
 const CLI_STATUS_TIMEOUT_MS = 15_000;
@@ -142,141 +53,6 @@ const parseCliStatusPayload = (json: string): CliStatusMap | null => {
   }
 };
 
-interface InstallDialogProps {
-  tool: CliToolDefinition | null;
-  onClose: () => void;
-  onCopy: (text: string) => void;
-  onOpenDocs: (url: string) => void;
-}
-
-const InstallDialog = ({ tool, onClose, onCopy, onOpenDocs }: InstallDialogProps) => {
-  const { t } = useTranslation();
-
-  useEffect(() => {
-    if (!tool) return undefined;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [tool, onClose]);
-
-  if (!tool) return null;
-
-  const name = t(tool.nameKey);
-
-  return (
-    <div className={styles.dialogOverlay} onClick={onClose} role="presentation">
-      <div
-        className={styles.dialog}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cli-install-dialog-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className={styles.dialogHeader}>
-          <span className="codicon codicon-terminal" aria-hidden="true" />
-          <h4 id="cli-install-dialog-title" className={styles.dialogTitle}>
-            {t('settings.cli.installDialog.title', { name })}
-          </h4>
-          <button
-            type="button"
-            className={styles.dialogClose}
-            onClick={onClose}
-            aria-label={t('common.close')}
-          >
-            <span className="codicon codicon-close" />
-          </button>
-        </div>
-
-        <div className={styles.dialogBody}>
-          <p className={styles.dialogLead}>
-            {t('settings.cli.installDialog.lead', { name, binary: tool.binaryName })}
-          </p>
-
-          <ol className={styles.stepList}>
-            <li>{t('settings.cli.installDialog.stepOpenTerminal')}</li>
-            <li>{t('settings.cli.installDialog.stepRunCommand')}</li>
-            <li>{t('settings.cli.installDialog.stepVerify', { binary: tool.binaryName })}</li>
-            <li>{t('settings.cli.installDialog.stepReturn')}</li>
-          </ol>
-
-          <p className={styles.commandLabel}>{t('settings.cli.installDialog.primaryCommand')}</p>
-          <div className={styles.commandBlock}>
-            {tool.installCommand}
-            <button
-              type="button"
-              className={styles.copyBtn}
-              onClick={() => onCopy(tool.installCommand)}
-              title={t('settings.cli.copy')}
-              aria-label={t('settings.cli.copy')}
-            >
-              <span className="codicon codicon-copy" />
-            </button>
-          </div>
-
-          {tool.installCommandWindows && (
-            <>
-              <p className={styles.commandLabel}>{t('settings.cli.installDialog.windowsCommand')}</p>
-              <div className={styles.commandBlock}>
-                {tool.installCommandWindows}
-                <button
-                  type="button"
-                  className={styles.copyBtn}
-                  onClick={() => onCopy(tool.installCommandWindows!)}
-                  title={t('settings.cli.copy')}
-                  aria-label={t('settings.cli.copy')}
-                >
-                  <span className="codicon codicon-copy" />
-                </button>
-              </div>
-            </>
-          )}
-
-          {tool.altInstallCommand && (
-            <>
-              <p className={styles.commandLabel}>{t('settings.cli.installDialog.altCommand')}</p>
-              <div className={styles.commandBlock}>
-                {tool.altInstallCommand}
-                <button
-                  type="button"
-                  className={styles.copyBtn}
-                  onClick={() => onCopy(tool.altInstallCommand!)}
-                  title={t('settings.cli.copy')}
-                  aria-label={t('settings.cli.copy')}
-                >
-                  <span className="codicon codicon-copy" />
-                </button>
-              </div>
-            </>
-          )}
-
-          <a
-            className={styles.docsLink}
-            href={tool.docsUrl}
-            target="_blank"
-            rel="noreferrer noopener"
-            onClick={(e) => {
-              // JCEF won't route target=_blank to the system browser — go through the bridge.
-              e.preventDefault();
-              onOpenDocs(tool.docsUrl);
-            }}
-          >
-            <span className="codicon codicon-link-external" aria-hidden="true" />
-            {t('settings.cli.installDialog.openDocs')}
-          </a>
-        </div>
-
-        <div className={styles.dialogFooter}>
-          <button type="button" className={styles.dialogPrimaryBtn} onClick={onClose}>
-            {t('common.gotIt')}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 const CliSection = ({ addToast }: CliSectionProps) => {
   const { t } = useTranslation();
   const [statusMap, setStatusMap] = useState<CliStatusMap>({});
@@ -285,6 +61,7 @@ const CliSection = ({ addToast }: CliSectionProps) => {
   const [installTool, setInstallTool] = useState<CliToolDefinition | null>(null);
   const addToastRef = useRef(addToast);
   const statusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hiddenProviders = useHiddenCliProviders();
 
   useEffect(() => {
     addToastRef.current = addToast;
@@ -348,7 +125,12 @@ const CliSection = ({ addToast }: CliSectionProps) => {
   }, []);
 
   const openDocs = useCallback((url: string) => {
-    openBrowser(url);
+    // CLI docs pages are SPAs that often render blank in the embedded JCEF
+    // preview — open them in the system default browser instead.
+    openBrowserExternal(url);
+  }, []);
+  const toggleSwitcherVisibility = useCallback((id: CliToolId, hidden: boolean) => {
+    setCliProviderHidden(id, hidden);
   }, []);
 
   const { installedCount, totalCount, hasStatus } = useMemo(() => {
@@ -397,45 +179,16 @@ const CliSection = ({ addToast }: CliSectionProps) => {
         <p className={styles.headerHint}>{t('settings.cli.hint')}</p>
       </div>
 
-      <div className={styles.cliList}>
-        {loading && Object.keys(statusMap).length === 0 ? (
-          <>
-            <div className={styles.loadingState}>
-              <span className="codicon codicon-loading codicon-modifier-spin" />
-              <span>{t('settings.cli.loading')}</span>
-            </div>
-            <DshConnectionCard />
-          </>
-        ) : statusError && Object.keys(statusMap).length === 0 ? (
-          <>
-            <div className={styles.errorState}>
-              <span className="codicon codicon-warning" />
-              <span>{t('settings.cli.loadFailed')}</span>
-              <button type="button" className={styles.refreshBtn} onClick={requestStatus}>
-                <span className="codicon codicon-refresh" />
-                {t('settings.cli.retry')}
-              </button>
-            </div>
-            <DshConnectionCard />
-          </>
-        ) : (
-          CLI_TOOL_DEFINITIONS.map((tool) => (
-            <div
-              key={tool.id}
-              className={tool.id === 'dsh' ? styles.dshGroup : undefined}
-            >
-              <CliToolCard
-                tool={tool}
-                status={statusMap[tool.id]}
-                onOpenInstall={openInstallGuide}
-                onOpenDocs={openDocs}
-              />
-              {/* Host connection belongs with the DSH install row, not above the whole CLI list. */}
-              {tool.id === 'dsh' && <DshConnectionCard />}
-            </div>
-          ))
-        )}
-      </div>
+      <CliToolList
+        loading={loading}
+        statusError={statusError}
+        statusMap={statusMap}
+        onRefresh={requestStatus}
+        onOpenInstall={openInstallGuide}
+        onOpenDocs={openDocs}
+        hiddenProviders={hiddenProviders}
+        onToggleSwitcherVisibility={toggleSwitcherVisibility}
+      />
 
       {!loading && !statusError && Object.keys(statusMap).length > 0 && (
         <p className={styles.moreComing}>{t('settings.cli.moreComingSoon')}</p>

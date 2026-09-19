@@ -1,5 +1,6 @@
 export { ModeSelect } from './ModeSelect';
 export { ModelSelect } from './ModelSelect';
+export { ModelConfigSelect } from './ModelConfigSelect';
 export { ProviderSelect } from './ProviderSelect';
 export { RuntimeProviderSelect } from './RuntimeProviderSelect';
 export { ConfigSelect } from './ConfigSelect';

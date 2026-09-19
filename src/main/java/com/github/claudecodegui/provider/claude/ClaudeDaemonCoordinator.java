@@ -29,6 +29,7 @@ class ClaudeDaemonCoordinator {
     private final Object daemonLock = new Object();
     private volatile long daemonRetryAfter = 0;
     private volatile CompletableFuture<?> prewarmFuture;
+    private volatile long lifecycleGeneration;
     // Listeners are cached so they can be re-attached when the daemon
     // restarts (a new DaemonBridge instance is created on each restart).
     private final List<DaemonBridge.DaemonEventListener> cachedEventListeners = new CopyOnWriteArrayList<>();
@@ -85,6 +86,15 @@ class ClaudeDaemonCoordinator {
                 return current;
             }
 
+            if (current != null && current.isIdleRetired()) {
+                if (current.ensureRunning()) {
+                    daemonRetryAfter = 0;
+                    return current;
+                }
+                daemonRetryAfter = System.currentTimeMillis() + DAEMON_RETRY_DELAY_MS;
+                return null;
+            }
+
             daemonRetryAfter = System.currentTimeMillis() + DAEMON_RETRY_DELAY_MS;
             try {
                 if (current != null) {
@@ -118,17 +128,21 @@ class ClaudeDaemonCoordinator {
     }
 
     void shutdownDaemon() {
-        CompletableFuture<?> runningPrewarm = prewarmFuture;
-        if (runningPrewarm != null) {
-            runningPrewarm.cancel(true);
+        CompletableFuture<?> runningPrewarm;
+        DaemonBridge current;
+        synchronized (daemonLock) {
+            lifecycleGeneration++;
+            runningPrewarm = prewarmFuture;
             prewarmFuture = null;
-        }
-
-        DaemonBridge current = daemonBridge;
-        if (current != null) {
-            current.stop();
+            current = daemonBridge;
             daemonBridge = null;
             daemonRetryAfter = 0;
+        }
+        if (runningPrewarm != null) {
+            runningPrewarm.cancel(true);
+        }
+        if (current != null) {
+            current.stop();
         }
     }
 
@@ -142,11 +156,19 @@ class ClaudeDaemonCoordinator {
             previous.cancel(true);
         }
 
+        final long generation = lifecycleGeneration;
         prewarmFuture = CompletableFuture.runAsync(() -> {
             try {
+                if (generation != lifecycleGeneration) {
+                    return;
+                }
                 DaemonBridge daemon = getDaemonBridge();
                 if (daemon == null) {
                     log.info("[DaemonCoordinator] Daemon prewarm skipped (daemon unavailable)");
+                    return;
+                }
+                if (generation != lifecycleGeneration) {
+                    daemon.stop();
                     return;
                 }
 

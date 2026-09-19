@@ -246,6 +246,12 @@ class HistoryDeleteService {
         if ("kimi".equals(currentProvider)) {
             return new DeleteResult(deleteKimiSession(sessionId), 0);
         }
+        if ("minimax".equals(currentProvider)) {
+            return new DeleteResult(deleteMiniMaxSession(sessionId), 0);
+        }
+        if ("zcode".equals(currentProvider)) {
+            return new DeleteResult(deleteZcodeSession(sessionId), 0);
+        }
         if ("dsh".equals(currentProvider)) {
             return new DeleteResult(deleteDshSession(sessionId), 0);
         }
@@ -314,6 +320,28 @@ class HistoryDeleteService {
                 new com.github.claudecodegui.provider.kimi.KimiHistoryReader();
         boolean deleted = reader.deleteSession(sessionId, projectPath);
         LOG.info("[HistoryHandler] Delete Kimi session " + sessionId + ": " + (deleted ? "ok" : "not found"));
+        return deleted;
+    }
+
+    private boolean deleteMiniMaxSession(String sessionId) throws java.io.IOException {
+        String rawPath = context.resolveEffectiveWorkingDirectory();
+        String nodePath = NodeDetector.getInstance().getCachedNodePath();
+        String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
+        com.github.claudecodegui.provider.minimax.MiniMaxHistoryReader reader =
+                new com.github.claudecodegui.provider.minimax.MiniMaxHistoryReader();
+        boolean deleted = reader.deleteSession(sessionId, projectPath);
+        LOG.info("[HistoryHandler] Delete MiniMax session " + sessionId + ": " + (deleted ? "ok" : "not found"));
+        return deleted;
+    }
+
+    private boolean deleteZcodeSession(String sessionId) throws java.io.IOException {
+        String rawPath = context.resolveEffectiveWorkingDirectory();
+        String nodePath = NodeDetector.getInstance().getCachedNodePath();
+        String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
+        com.github.claudecodegui.provider.zcode.ZcodeHistoryReader reader =
+                new com.github.claudecodegui.provider.zcode.ZcodeHistoryReader();
+        boolean deleted = reader.deleteSession(sessionId, projectPath);
+        LOG.info("[HistoryHandler] Delete ZCode session " + sessionId + ": " + (deleted ? "ok" : "not found"));
         return deleted;
     }
 
@@ -514,48 +542,49 @@ class HistoryDeleteService {
         String homeDir = NodeDetector.resolveHomeForFileOps();
         Path claudeDir = Paths.get(homeDir, ".claude");
         Path projectsDir = claudeDir.resolve("projects");
-        String sanitizedPath = PathUtils.sanitizePath(projectPath);
-        Path sessionDir = projectsDir.resolve(sanitizedPath);
-
-        if (!Files.exists(sessionDir)) {
-            LOG.error("[HistoryHandler] Claude project directory not found: " + sessionDir);
+        List<Path> sessionDirs = PathUtils.getSanitizedPathCandidates(projectPath).stream()
+                .map(projectsDir::resolve)
+                .filter(Files::isDirectory)
+                .collect(Collectors.toList());
+        if (sessionDirs.isEmpty()) {
+            LOG.error("[HistoryHandler] Claude project directory not found for: " + projectPath);
             return new int[]{0, 0};
         }
 
         boolean mainDeleted = false;
         int agentFilesDeleted = 0;
 
-        // Delete main session file
-        Path mainSessionFile = sessionDir.resolve(sessionId + ".jsonl").normalize();
-        if (!mainSessionFile.startsWith(sessionDir.normalize())) {
-            LOG.warn("[HistoryHandler] Refused out-of-bounds path: " + mainSessionFile);
-            return new int[]{0, 0};
-        }
-        if (Files.exists(mainSessionFile)) {
-            Files.delete(mainSessionFile);
-            LOG.info("[HistoryHandler] Deleted main session file: " + mainSessionFile.getFileName());
-            mainDeleted = true;
-        } else {
-            LOG.warn("[HistoryHandler] Main session file not found: " + mainSessionFile.getFileName());
-        }
+        for (Path sessionDir : sessionDirs) {
+            // Delete main session file
+            Path mainSessionFile = sessionDir.resolve(sessionId + ".jsonl").normalize();
+            if (!mainSessionFile.startsWith(sessionDir.normalize())) {
+                LOG.warn("[HistoryHandler] Refused out-of-bounds path: " + mainSessionFile);
+                continue;
+            }
+            if (Files.exists(mainSessionFile)) {
+                Files.delete(mainSessionFile);
+                LOG.info("[HistoryHandler] Deleted main session file: " + mainSessionFile.getFileName());
+                mainDeleted = true;
+            }
 
-        // Delete related agent files
-        try (Stream<Path> stream = Files.list(sessionDir)) {
-            List<Path> agentFiles = stream
-                    .filter(path -> {
-                        String filename = path.getFileName().toString();
-                        return filename.startsWith("agent-") && filename.endsWith(".jsonl")
-                                && isAgentFileRelatedToSession(path, sessionId);
-                    })
-                    .collect(Collectors.toList());
+            // Delete related agent files
+            try (Stream<Path> stream = Files.list(sessionDir)) {
+                List<Path> agentFiles = stream
+                        .filter(path -> {
+                            String filename = path.getFileName().toString();
+                            return filename.startsWith("agent-") && filename.endsWith(".jsonl")
+                                    && isAgentFileRelatedToSession(path, sessionId);
+                        })
+                        .collect(Collectors.toList());
 
-            for (Path agentFile : agentFiles) {
-                try {
-                    Files.delete(agentFile);
-                    LOG.info("[HistoryHandler] Deleted related agent file: " + agentFile.getFileName());
-                    agentFilesDeleted++;
-                } catch (Exception e) {
-                    LOG.error("[HistoryHandler] Failed to delete agent file: " + agentFile.getFileName() + " - " + e.getMessage(), e);
+                for (Path agentFile : agentFiles) {
+                    try {
+                        Files.delete(agentFile);
+                        LOG.info("[HistoryHandler] Deleted related agent file: " + agentFile.getFileName());
+                        agentFilesDeleted++;
+                    } catch (Exception e) {
+                        LOG.error("[HistoryHandler] Failed to delete agent file: " + agentFile.getFileName() + " - " + e.getMessage(), e);
+                    }
                 }
             }
         }

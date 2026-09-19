@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { Attachment } from '../components/ChatInputBox/types';
 
 export interface QueuedMessage {
@@ -24,6 +24,8 @@ export interface UseMessageQueueReturn {
   dequeue: (id: string) => void;
   /** Clear entire queue */
   clearQueue: () => void;
+  /** Reorder queue by an ordered list of ids (index 0 executes first) */
+  reorder: (orderedIds: string[]) => void;
   /** Whether queue has items */
   hasQueuedMessages: boolean;
 }
@@ -37,8 +39,6 @@ export function useMessageQueue({
   onExecute,
 }: UseMessageQueueOptions): UseMessageQueueReturn {
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
-  const prevLoadingRef = useRef(isLoading);
-  const isExecutingFromQueueRef = useRef(false);
 
   // Generate unique ID
   const generateId = useCallback(() => {
@@ -66,26 +66,42 @@ export function useMessageQueue({
     setQueue([]);
   }, []);
 
-  // Auto-execute next message when loading completes
+  /**
+   * Reorder the queue by the given id sequence (orderedIds[0] executes next).
+   * - Ids not present in the current queue are ignored.
+   * - Items missing from orderedIds (e.g. enqueued mid-drag) are appended in
+   *   their original order so no message is ever dropped.
+   */
+  const reorder = useCallback((orderedIds: string[]) => {
+    setQueue(prev => {
+      const byId = new Map(prev.map(item => [item.id, item]));
+      const seen = new Set<string>();
+      const ordered: QueuedMessage[] = [];
+      for (const id of orderedIds) {
+        const item = byId.get(id);
+        if (item && !seen.has(id)) {
+          ordered.push(item);
+          seen.add(id);
+        }
+      }
+      const remaining = prev.filter(item => !seen.has(item.id));
+      return [...ordered, ...remaining];
+    });
+  }, []);
+
+  // Auto-execute next message whenever the chat is idle. Dequeue and execute
+  // must stay atomic inside this effect: deferring the execution behind a
+  // timer let the very next re-render (the dequeue's own state update) run
+  // effect cleanup, cancel the timer, and silently drop the already-dequeued
+  // message. Checking "idle && non-empty" instead of a loading transition also
+  // covers messages enqueued while `isLoading` was already flipping to false.
   useEffect(() => {
-    // Detect transition from loading to not loading
-    const wasLoading = prevLoadingRef.current;
-    prevLoadingRef.current = isLoading;
-
-    // If just finished loading and queue has items, execute next
-    if (wasLoading && !isLoading && !isExecutingFromQueueRef.current && queue.length > 0) {
-      const nextMessage = queue[0];
-      isExecutingFromQueueRef.current = true;
-
-      // Remove from queue first
-      setQueue(prev => prev.slice(1));
-
-      // Execute with small delay to ensure state updates
-      setTimeout(() => {
-        onExecute(nextMessage.content, nextMessage.attachments);
-        isExecutingFromQueueRef.current = false;
-      }, 50);
+    if (isLoading || queue.length === 0) {
+      return;
     }
+    const nextMessage = queue[0];
+    setQueue(prev => prev.slice(1));
+    onExecute(nextMessage.content, nextMessage.attachments);
   }, [isLoading, queue, onExecute]);
 
   return {
@@ -93,6 +109,7 @@ export function useMessageQueue({
     enqueue,
     dequeue,
     clearQueue,
+    reorder,
     hasQueuedMessages: queue.length > 0,
   };
 }

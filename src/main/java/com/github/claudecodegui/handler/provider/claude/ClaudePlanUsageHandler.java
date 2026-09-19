@@ -31,7 +31,7 @@ public class ClaudePlanUsageHandler extends BaseMessageHandler {
         if ("get_claude_plan_usage".equals(type)) {
             ApplicationManager.getApplication().executeOnPooledThread(() -> {
                 try {
-                    JsonObject usage = ClaudePlanUsageService.resolvePlanUsagePayload();
+                    JsonObject usage = ClaudePlanUsageService.resolvePlanUsagePayload(context.getSettingsService());
                     if (usage == null) {
                         usage = new JsonObject();
                         usage.addProperty("error", true);

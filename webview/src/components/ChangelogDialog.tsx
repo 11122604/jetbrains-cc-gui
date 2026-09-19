@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ChangelogEntry } from '../version/changelog';
-
+import { openBrowser, GITHUB_REPO_URL } from '../utils/bridge';
 interface ChangelogDialogProps {
   isOpen: boolean;
   onClose: () => void;
@@ -181,8 +181,24 @@ const ChangelogDialog = ({ isOpen, onClose, entries, initialPage = 0 }: Changelo
             <span className="changelog-version-badge">v{entry.version}</span>
             <span className="changelog-date">{entry.date}</span>
           </div>
-          <button className="changelog-close-btn" onClick={onClose}>
+          <button className="changelog-close-btn" onClick={onClose} aria-label={t('common.close')}>
             <span className="codicon codicon-close" />
+          </button>
+        </div>
+
+        {/* Open source banner (reuses the chat header banner styles) */}
+        <div className="open-source-banner">
+          <span className="banner-text">{t('chat.openSourceBanner')}</span>
+          <button
+            type="button"
+            className="banner-star"
+            aria-label={t('chat.openSourceBannerStarAria')}
+            onClick={() => openBrowser(GITHUB_REPO_URL)}
+          >
+            <svg className="star-icon" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <path d="M12 2.5l2.9 5.88 6.49.94-4.7 4.58 1.11 6.46L12 17.9l-5.8 3.05 1.11-6.46-4.7-4.58 6.49-.94z" />
+            </svg>
+            <span className="banner-star-text">{t('chat.openSourceBannerStar')}</span>
           </button>
         </div>
 
@@ -213,9 +229,9 @@ const ChangelogDialog = ({ isOpen, onClose, entries, initialPage = 0 }: Changelo
           <div className="changelog-pagination">
             {totalPages <= 10 ? (
               <div className="changelog-dots">
-                {entries.map((_, idx) => (
+                {entries.map((pageEntry, idx) => (
                   <button
-                    key={idx}
+                    key={`${pageEntry.version}-${pageEntry.date}`}
                     className={`changelog-dot ${idx === currentPage ? 'active' : ''}`}
                     onClick={() => setCurrentPage(idx)}
                     aria-label={`Page ${idx + 1}`}

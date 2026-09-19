@@ -23,13 +23,20 @@ import {
 import {
   bridgeDshApproval,
   bridgeDshQuestion,
+  bridgeModernApproval,
+  bridgeModernQuestion,
   DshGoalSettlement,
   DshMuxConnection,
   peekMuxSessionId,
+  projectFollowFrame,
   projectMuxFrame,
+  projectRemoteEventFrame,
+  waterfallBelongsToSession,
 } from './events.js';
+import { DshRemoteMux } from './stream-client.js';
 import { ensureHost, runtimeSettingsFromEnv } from './supervisor.js';
 import * as dshSession from './session.js';
+import { MODERN_DIALECT } from './wire.js';
 
 function logDebug(...args) {
   console.error('[DEBUG][DSH]', ...args);
@@ -62,8 +69,53 @@ export function splitModelTuple(model) {
 }
 
 /**
- * ensure host (adopt or spawn) → workspace.create → session id (create or
- * reuse). Returns null after emitting the send error when any step fails.
+ * Bind one project directory as a Workspace, then resolve the session inside it.
+ *
+ * @param {object} client - negotiated host client.
+ * @param {string} workCwd - project directory the turn runs in.
+ * @param {string} [incomingSessionId] - thread this send resumes, if any.
+ * @returns {Promise<string>} the session id to prompt.
+ * @throws when the Workspace, or a brand-new session in it, cannot be bound.
+ */
+export async function bindWorkspaceSession(client, workCwd, incomingSessionId) {
+  // Workspace binding — never let the session fall into the host cwd. The host
+  // groups by explicit Workspace ownership only, so a cwd-only creation would be
+  // filed under "Ungrouped" for good. Creating is idempotent per directory.
+  let workspaceId;
+  try {
+    const workspace = await dshSession.createWorkspace(client, workCwd);
+    workspaceId = dshSession.workspaceIdFromCreate(workspace);
+  } catch (error) {
+    throw new Error(`dsh workspace.create failed: ${error.message}`);
+  }
+
+  // Session identity: DSH returns the real id immediately; never mint a local UUID.
+  const sessionId = dshSession.sessionIdFromThread(incomingSessionId);
+  if (!sessionId) {
+    try {
+      return await dshSession.createSession(client, workspaceId);
+    } catch (error) {
+      throw new Error(`dsh session.create failed: ${error.message}`);
+    }
+  }
+
+  // A resumed thread is re-bound as well: threads created before this binding (or
+  // by another client) are ungrouped, and the host never adopts a session by
+  // directory after startup. The host answers with the live session and attaches
+  // it, so the call is idempotent; a host that refuses it — `session/conflict`,
+  // when the session's recorded cwd differs from the Workspace path — must not
+  // fail the turn, so this leg stays best-effort.
+  try {
+    await dshSession.createSession(client, workspaceId, sessionId);
+  } catch (error) {
+    logDebug(`[dsh] rebind of ${sessionId} skipped: ${error.message}`);
+  }
+  return sessionId;
+}
+
+/**
+ * ensure host (adopt or spawn) → bind Workspace → session id (create or
+ * re-bind). Returns null after emitting the send error when any step fails.
  */
 async function ensureSession(settings, workCwd, incomingSessionId) {
   let hostHandle;
@@ -76,27 +128,12 @@ async function ensureSession(settings, workCwd, incomingSessionId) {
   const { client } = hostHandle;
   logDebug(`host ${hostHandle.origin} (${hostHandle.ownership})`);
 
-  // Workspace binding — never let the session fall into the host cwd.
-  let workspaceId;
   try {
-    const workspace = await dshSession.createWorkspace(client, workCwd);
-    workspaceId = dshSession.workspaceIdFromCreate(workspace);
+    return { client, sessionId: await bindWorkspaceSession(client, workCwd, incomingSessionId) };
   } catch (error) {
-    emitSendError(`dsh workspace.create failed: ${error.message}`, 'DSH');
+    emitSendError(error.message, 'DSH');
     return null;
   }
-
-  // Session identity: DSH returns the real id immediately; never mint a local UUID.
-  let sessionId = dshSession.sessionIdFromThread(incomingSessionId);
-  if (!sessionId) {
-    try {
-      sessionId = await dshSession.createSession(client, workspaceId);
-    } catch (error) {
-      emitSendError(`dsh session.create failed: ${error.message}`, 'DSH');
-      return null;
-    }
-  }
-  return { client, sessionId };
 }
 
 /** Model selection — only when the composer picked an explicit tuple. */
@@ -154,6 +191,12 @@ function createTurnState() {
     sawTurnStart: false,
     lastActivityAt: Date.now(),
     pendingBridges: new Set(),
+    /** Modern hosts route waterfall answers by this per-generation id. */
+    clientId: null,
+    /** $events waterfalls the host withdrew before they were answered. */
+    withdrawnWaterfalls: new Set(),
+    /** eventId → tracked bridge promise, so a cancel can release the drain. */
+    waterfallBridges: new Map(),
   };
 }
 
@@ -193,6 +236,7 @@ function trackBridge(turn, bridge, label) {
   const tracked = bridge.catch((error) => logDebug(`${label} bridge failed: ${error.message}`));
   turn.pendingBridges.add(tracked);
   tracked.finally(() => turn.pendingBridges.delete(tracked));
+  return tracked;
 }
 
 function handleTurnEvent(client, sessionId, turn, event) {
@@ -325,6 +369,180 @@ function settlePendingBridges(pendingBridges) {
 }
 
 /**
+ * Subscribe the modern Remote streams for one turn.
+ *
+ * Two logical streams ride the single `/api/remote.mux` socket: `$events`
+ * carries the forwarded waterfalls (approvals and questions) and `session/follow`
+ * carries durable session events plus the opted-in assistant deltas. Nothing is
+ * delivered until each `open` frame is sent.
+ */
+function subscribeModernStreams(client, sessionId, turn) {
+  const mux = new DshRemoteMux(client.muxUrl(), {
+    headers: client.muxHeaders(),
+    log: logDebug,
+  });
+  mux.connect();
+
+  mux.open('$events', {}, {
+    onValue: (value) => {
+      const instruction = projectRemoteEventFrame(value);
+      if (!instruction) {
+        return;
+      }
+      if (instruction.kind === 'ready') {
+        turn.clientId = instruction.clientId;
+        turn.lastActivityAt = Date.now();
+        return;
+      }
+      if (instruction.kind === 'cancel') {
+        // The host withdrew the waterfall: mark it so a late user answer is
+        // not posted, and release the drain — the bridge promise keeps
+        // running in the background until the Java-side prompt resolves
+        // (there is no IPC to dismiss that dialog from here). Cancel frames
+        // carry no agentId, so ownership cannot be checked directly; gating
+        // on this turn's own offer instead keeps a foreign session's cancel
+        // from poisoning this turn's withdrawn set (and from relying on
+        // host-global eventId uniqueness for correctness).
+        if (!turn.waterfallBridges.has(instruction.eventId)) {
+          return;
+        }
+        turn.withdrawnWaterfalls.add(instruction.eventId);
+        turn.pendingBridges.delete(turn.waterfallBridges.get(instruction.eventId));
+        turn.waterfallBridges.delete(instruction.eventId);
+        logDebug(`[dsh] waterfall ${instruction.eventId} withdrawn by the host`);
+        return;
+      }
+      // Approval and question waterfalls arrive on a host-wide stream: every
+      // `$events` client is offered every session's requests. Answering one that
+      // belongs to another session would pop this window's dialog for a question
+      // nobody here asked (and steal the reply), so only this turn's own session
+      // is prompted. The foreign request stays pending for the client that owns
+      // it — dropping it here is not a rejection.
+      if (!waterfallBelongsToSession(instruction.agentId, sessionId)) {
+        logDebug(
+          `[dsh] ignoring a ${instruction.kind} for session ${instruction.agentId} `
+          + `(this turn serves ${sessionId})`
+        );
+        return;
+      }
+      turn.lastActivityAt = Date.now();
+      switch (instruction.kind) {
+        case 'approval-request':
+          // A reconnect can replay a still-pending waterfall into a fresh
+          // generation; without this guard the replay spawns a SECOND dialog
+          // for a request this turn is already prompting for. A replayed frame
+          // for an already-withdrawn waterfall is likewise ignored.
+          if (
+            turn.waterfallBridges.has(instruction.eventId)
+            || turn.withdrawnWaterfalls.has(instruction.eventId)
+          ) {
+            break;
+          }
+          turn.waterfallBridges.set(
+            instruction.eventId,
+            trackBridge(
+              turn,
+              bridgeModernApproval(
+                client,
+                // Live getter: a waterfall may arrive before (or across) the
+                // `ready` frame, and the bridge waits briefly for the id rather
+                // than prompting a dialog whose answer cannot be posted.
+                () => turn.clientId,
+                instruction,
+                logDebug,
+                () => turn.withdrawnWaterfalls.has(instruction.eventId)
+              ),
+              'approval'
+            )
+          );
+          break;
+        case 'question-request':
+          if (
+            turn.waterfallBridges.has(instruction.eventId)
+            || turn.withdrawnWaterfalls.has(instruction.eventId)
+          ) {
+            break;
+          }
+          turn.waterfallBridges.set(
+            instruction.eventId,
+            trackBridge(
+              turn,
+              bridgeModernQuestion(
+                client,
+                () => turn.clientId,
+                instruction,
+                logDebug,
+                () => turn.withdrawnWaterfalls.has(instruction.eventId)
+              ),
+              'question'
+            )
+          );
+          break;
+        default:
+          break;
+      }
+    },
+    onError: (error) => logDebug(`[dsh] $events stream error: ${error.message}`),
+  });
+
+  mux.open('session/follow', {
+    request: {
+      address: { kind: 'session', sessionId },
+      // The opening snapshot is history, which the plugin renders from its own
+      // reader; one record is enough to make the window legal.
+      maxMessages: 1,
+      assistantStream: true,
+    },
+  }, {
+    onValue: (value) => {
+      turn.lastActivityAt = Date.now();
+      for (const event of projectFollowFrame(value)) {
+        handleTurnEvent(client, sessionId, turn, event);
+      }
+    },
+    onError: (error) => logDebug(`[dsh] follow stream error: ${error.message}`),
+  });
+
+  return mux;
+}
+
+/** Shared tail: wait for settlement, drain bridges, close the transport. */
+async function finishTurn(turn, mux) {
+  await awaitSettlement(turn);
+  await settlePendingBridges(turn.pendingBridges);
+  endStream();
+  mux.close();
+
+  if (turn.settleError) {
+    emitSendError(turn.settleError, 'DSH');
+    return;
+  }
+  if (!turn.sawTurnStart) {
+    logDebug('turn settled without turn/start (queued turn may have been coalesced)');
+  }
+}
+
+/** One turn against a modern host: `$events` + `session/follow` + prompt. */
+async function runModernTurn(client, sessionId, text, images) {
+  const turn = createTurnState();
+  const mux = subscribeModernStreams(client, sessionId, turn);
+
+  const opened = await awaitMuxOpen(mux);
+  if (!opened) {
+    mux.close();
+    emitSendError('dsh mux WebSocket did not open in time', 'DSH');
+    return;
+  }
+
+  registerShutdownCancel(client, sessionId, mux);
+  if (!(await promptTurn(client, sessionId, mux, text, images))) {
+    return;
+  }
+
+  await finishTurn(turn, mux);
+}
+
+/**
  * @param {object} options
  * @param {string} options.message
  * @param {string} [options.sessionId]
@@ -359,6 +577,11 @@ export async function sendMessage(options = {}) {
   await applyModelSelection(client, sessionId, model, reasoningEffort);
   const { text, images } = buildTurnContent(message, attachments);
 
+  if (client.dialect === MODERN_DIALECT) {
+    await runModernTurn(client, sessionId, text, images);
+    return;
+  }
+
   // Mux subscription must be live before prompt, or early frames are lost.
   const turn = createTurnState();
   const mux = new DshMuxConnection(client.muxUrl(), createMuxHandler(client, sessionId, turn), logDebug);
@@ -375,17 +598,5 @@ export async function sendMessage(options = {}) {
     return;
   }
 
-  await awaitSettlement(turn);
-  await settlePendingBridges(turn.pendingBridges);
-
-  endStream();
-  mux.close();
-
-  if (turn.settleError) {
-    emitSendError(turn.settleError, 'DSH');
-    return;
-  }
-  if (!turn.sawTurnStart) {
-    logDebug('turn settled without turn/start (queued turn may have been coalesced)');
-  }
+  await finishTurn(turn, mux);
 }

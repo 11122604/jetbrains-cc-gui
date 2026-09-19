@@ -55,8 +55,7 @@ function extractToolResultPreview(result: ToolResultBlock | null | undefined): s
     text = result.content;
   } else if (Array.isArray(result.content)) {
     text = result.content
-      .map((item) => (item && typeof item.text === 'string' ? item.text : ''))
-      .filter(Boolean)
+      .flatMap((item) => (item && typeof item.text === 'string' && item.text ? [item.text] : []))
       .join('\n');
   }
 
@@ -127,6 +126,12 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   const [historyPageInfo, setHistoryPageInfo] = useState<CodexHistoryPageInfo | null>(null);
   const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
   const loadingEarlierHistoryRef = useRef(false);
+
+  // Keep the ref in sync with state. Every writer sets both; the sync lives in
+  // an effect because render must stay pure (refs may not be mutated there).
+  useEffect(() => {
+    loadingEarlierHistoryRef.current = loadingEarlierHistory;
+  }, [loadingEarlierHistory]);
   const [detailedOutputEnabled, setDetailedOutputEnabled] = useState(() =>
     getDetailedOutputEnabled()
   );
@@ -159,26 +164,27 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
     return () => window.removeEventListener('keydown', handleQuoteHotkey);
   }, []);
 
-  // Use explicit session identity in production; keep the message boundary for isolated callers/tests.
-  const previousSessionRef = useRef(currentSessionId);
-  const firstMessageBoundaryRef = useRef(getFirstMessageBoundaryKey(messages[0]));
-  useEffect(() => {
-    const currentBoundary = getFirstMessageBoundaryKey(messages[0]);
-    const sessionChanged = currentSessionId != null
-      ? currentSessionId !== previousSessionRef.current
-      : currentBoundary !== firstMessageBoundaryRef.current;
-    if (sessionChanged) {
-      setRevealedTurnCount(0);
-      setLoadingEarlierHistory(false);
-      loadingEarlierHistoryRef.current = false;
-      const cached = window.__codexHistoryPageInfo;
-      setHistoryPageInfo(
-        currentProvider === 'codex' && cached?.sessionId === currentSessionId ? cached ?? null : null,
-      );
-    }
-    previousSessionRef.current = currentSessionId;
-    firstMessageBoundaryRef.current = currentBoundary;
-  }, [currentProvider, currentSessionId, messages]);
+  // Session-switch reset as a render-time adjustment (React-sanctioned setState
+  // during render): same resets the old prop-change effect performed, without
+  // the extra commit. Identity mirrors the old logic — explicit session id
+  // when available, else the first message boundary for isolated
+  // callers/tests.
+  const sessionIdentity = currentSessionId != null
+    ? `session:${currentSessionId}`
+    : `boundary:${getFirstMessageBoundaryKey(messages[0]) ?? ''}`;
+  const [prevSessionIdentity, setPrevSessionIdentity] = useState(sessionIdentity);
+  if (prevSessionIdentity !== sessionIdentity) {
+    setPrevSessionIdentity(sessionIdentity);
+    setRevealedTurnCount(0);
+    setLoadingEarlierHistory(false);
+    const cached = window.__codexHistoryPageInfo;
+    const claudeCached = window.__claudeHistoryPageInfo;
+    setHistoryPageInfo(
+      currentProvider === 'codex' && cached?.sessionId === currentSessionId ? cached ?? null
+        : currentProvider === 'claude' && claudeCached?.sessionId === currentSessionId ? claudeCached ?? null
+          : null,
+    );
+  }
 
   useEffect(() => {
     const handlePageInfo = (event: Event) => {
@@ -205,6 +211,10 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
     const cached = window.__codexHistoryPageInfo;
     if (currentProvider === 'codex' && cached?.sessionId === currentSessionId) {
       setHistoryPageInfo(cached ?? null);
+    }
+    const claudeCached = window.__claudeHistoryPageInfo;
+    if (currentProvider === 'claude' && claudeCached?.sessionId === currentSessionId) {
+      setHistoryPageInfo(claudeCached ?? null);
     }
     return () => {
       window.removeEventListener('codex-history-page-info', handlePageInfo);
@@ -306,6 +316,14 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
         <div
           className="collapsed-messages-indicator"
           onClick={handleRevealMore}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              handleRevealMore();
+            }
+          }}
         >
           {loadingEarlierHistory
             ? t('chat.loadingEarlierTurns')

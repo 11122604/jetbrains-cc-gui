@@ -20,7 +20,7 @@ describe('toolPresentation', () => {
     });
   });
 
-  it('prefers structured line metadata over path suffix', () => {
+  it('treats read offset as a 1-based starting line number', () => {
     const target = resolveToolTarget({
       file_path: 'src/main.ts:1-10',
       offset: 19,
@@ -31,7 +31,21 @@ describe('toolPresentation', () => {
       file_path: 'src/main.ts:1-10',
       offset: 19,
       limit: 5,
-    }, target)).toEqual({ start: 20, end: 24 });
+    }, target)).toEqual({ start: 19, end: 23 });
+  });
+
+  it('covers the first page when reading from the top', () => {
+    const input = { file_path: 'src/main.ts', offset: 1, limit: 100 };
+    const target = resolveToolTarget(input, 'read');
+
+    expect(getToolLineInfo(input, target)).toEqual({ start: 1, end: 100 });
+  });
+
+  it('clamps a zero read offset to the first line', () => {
+    const input = { file_path: 'src/main.ts', offset: 0, limit: 50 };
+    const target = resolveToolTarget(input, 'read');
+
+    expect(getToolLineInfo(input, target)).toEqual({ start: 1, end: 50 });
   });
 
   it('summarizes shell-wrapped multiline commands like the TUI', () => {
@@ -65,5 +79,34 @@ describe('toolPresentation', () => {
       displayPath: 'src/main.ts:3-8',
       cleanFileName: 'main.ts',
     });
+  });
+  it('truncates long display paths from the start with an ellipsis prefix', () => {
+    const target = resolveToolTarget({
+      file_path: '/repo/webview/src/components/ChatInputBox/selectors/useFileTagExtraction.ts',
+      workdir: '/repo',
+    }, 'read');
+
+    expect(target?.displayPath).toBe('…/selectors/useFileTagExtraction.ts');
+    expect(target?.cleanFileName).toBe('useFileTagExtraction.ts');
+    expect(target?.openPath).toBe('/repo/webview/src/components/ChatInputBox/selectors/useFileTagExtraction.ts');
+  });
+
+  it('keeps a trailing separator when truncating long directory paths', () => {
+    const target = resolveToolTarget({
+      file_path: '/repo/webview/src/components/ChatInputBox/someVeryDeepFolderName/selectors/',
+      workdir: '/repo',
+    }, 'read');
+
+    expect(target?.displayPath).toBe('…/someVeryDeepFolderName/selectors/');
+    expect(target?.isDirectory).toBe(true);
+  });
+
+  it('leaves short display paths untouched', () => {
+    const target = resolveToolTarget({
+      file_path: '/repo/src/main.ts',
+      workdir: '/repo',
+    }, 'read');
+
+    expect(target?.displayPath).toBe('src/main.ts');
   });
 });

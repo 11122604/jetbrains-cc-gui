@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DSH_PRESETS, getUserDshPresetOptions } from '../types';
 import { useDropdownPosition } from '../../../hooks/useDropdownPosition';
@@ -28,17 +28,28 @@ const MODE_TEXT_STYLE: React.CSSProperties = {
 interface DshPresetSelectProps {
   value: string;
   onChange: (preset: string) => void;
+  embedded?: boolean;
+  triggerRef?: React.RefObject<HTMLElement | null>;
+  onClose?: () => void;
 }
 
-export const DshPresetSelect = ({ value, onChange }: DshPresetSelectProps) => {
+export const DshPresetSelect = ({
+  value,
+  onChange,
+  embedded = false,
+  triggerRef,
+  onClose,
+}: DshPresetSelectProps) => {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const { positionedStyle, recalculate } = useDropdownPosition({
-    buttonRef,
+  const { positionedStyle, maxHeight, maxWidth, recalculate } = useDropdownPosition({
+    buttonRef: (embedded ? triggerRef : buttonRef) as React.RefObject<HTMLElement | null>,
     dropdownRef,
     minWidth: 260,
+    maxWidth: 360,
+    submenu: embedded,
   });
 
   const options = useMemo(
@@ -66,12 +77,16 @@ export const DshPresetSelect = ({ value, onChange }: DshPresetSelectProps) => {
   const handleSelect = useCallback((presetId: string) => {
     onChange(presetId);
     setIsOpen(false);
-  }, [onChange]);
+    onClose?.();
+  }, [onChange, onClose]);
 
   useEffect(() => {
-    if (!isOpen) return undefined;
+    if (embedded || !isOpen) return undefined;
 
+    let armed = false;
+    const timer = setTimeout(() => { armed = true; }, 0);
     const handleClickOutside = (event: MouseEvent) => {
+      if (!armed) return;
       if (
         dropdownRef.current
         && !dropdownRef.current.contains(event.target as Node)
@@ -82,12 +97,70 @@ export const DshPresetSelect = ({ value, onChange }: DshPresetSelectProps) => {
       }
     };
 
-    const timer = setTimeout(() => document.addEventListener('mousedown', handleClickOutside), 0);
+    document.addEventListener('mousedown', handleClickOutside);
     return () => {
       clearTimeout(timer);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isOpen]);
+  }, [embedded, isOpen]);
+
+  useLayoutEffect(() => {
+    if (embedded || isOpen) {
+      recalculate();
+    }
+  }, [embedded, isOpen, recalculate]);
+
+  const dropdownStyle: React.CSSProperties = embedded
+    ? {
+        minWidth: 0,
+        maxWidth: maxWidth ?? 360,
+        ...(maxHeight != null
+          ? { maxHeight: `${Math.min(300, maxHeight)}px`, overflowY: 'auto' as const }
+          : { overflowY: 'visible' as const }),
+        ...positionedStyle,
+      }
+    : { ...DROPDOWN_STYLE, ...positionedStyle };
+
+  const renderDropdown = () => (
+        <div
+          ref={dropdownRef}
+          className="selector-dropdown"
+          data-testid="dsh-preset-dropdown"
+          style={dropdownStyle}
+          onMouseEnter={(event) => event.stopPropagation()}
+        >
+          {options.map((preset) => (
+            <div
+              key={preset.id}
+              data-testid={`dsh-preset-option-${preset.id || 'none'}`}
+              className={`selector-option ${preset.id === value ? 'selected' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => handleSelect(preset.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handleSelect(preset.id);
+                }
+              }}
+              title={getPresetText(preset.id, 'description')}
+            >
+              <span className={`codicon ${preset.id === '' ? 'codicon-circle-outline' : 'codicon-symbol-class'}`} />
+              <div style={MODE_INFO_STYLE}>
+                <span style={MODE_TEXT_STYLE}>{getPresetText(preset.id, 'label')}</span>
+                <span className="mode-description" style={MODE_TEXT_STYLE}>
+                  {getPresetText(preset.id, 'description')}
+                </span>
+              </div>
+              {preset.id === value && <span className="codicon codicon-check check-mark" />}
+            </div>
+          ))}
+        </div>
+  );
+
+  if (embedded) {
+    return renderDropdown();
+  }
 
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
@@ -102,32 +175,7 @@ export const DshPresetSelect = ({ value, onChange }: DshPresetSelectProps) => {
         <span className={`codicon codicon-chevron-${isOpen ? 'up' : 'down'}`} style={CHEVRON_ICON_STYLE} />
       </button>
 
-      {isOpen && (
-        <div
-          ref={dropdownRef}
-          className="selector-dropdown"
-          style={{ ...DROPDOWN_STYLE, ...positionedStyle }}
-        >
-          {options.map((preset) => (
-            <div
-              key={preset.id}
-              data-testid={`dsh-preset-option-${preset.id || 'none'}`}
-              className={`selector-option ${preset.id === value ? 'selected' : ''}`}
-              onClick={() => handleSelect(preset.id)}
-              title={getPresetText(preset.id, 'description')}
-            >
-              <span className={`codicon ${preset.id === '' ? 'codicon-circle-outline' : 'codicon-symbol-class'}`} />
-              <div style={MODE_INFO_STYLE}>
-                <span style={MODE_TEXT_STYLE}>{getPresetText(preset.id, 'label')}</span>
-                <span className="mode-description" style={MODE_TEXT_STYLE}>
-                  {getPresetText(preset.id, 'description')}
-                </span>
-              </div>
-              {preset.id === value && <span className="codicon codicon-check check-mark" />}
-            </div>
-          ))}
-        </div>
-      )}
+      {isOpen && renderDropdown()}
     </div>
   );
 };

@@ -5,6 +5,7 @@ import { AVAILABLE_PROVIDERS } from '../ChatInputBox/types';
 import { ProviderModelIcon } from '../shared/ProviderModelIcon';
 import AlertDialog from '../AlertDialog';
 import { useBetaProviderNotice } from '../../hooks/useBetaProviderNotice';
+import { useHiddenCliProviders } from '../../hooks/useCliProviderVisibility';
 
 const ROOT_STYLE: React.CSSProperties = {
   position: 'relative',
@@ -47,16 +48,19 @@ export const BlinkingLogo = ({ provider, onProviderChange }: BlinkingLogoProps) 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const betaNotice = useBetaProviderNotice();
+  const hiddenProviders = useHiddenCliProviders();
+  const visibleProviders = AVAILABLE_PROVIDERS.filter((p) => !hiddenProviders.has(p.id));
 
-  useEffect(() => {
-    if (provider !== displayProvider) {
-      if (animationState === 'idle') {
-        setAnimationState('closing');
-      } else if (animationState === 'opening') {
-         setAnimationState('closing');
-      }
+  // Render-time adjustment on provider change: start the close animation
+  // (unless one is already running). Same transitions the old prop-change
+  // effect produced, without an extra commit.
+  const [prevProvider, setPrevProvider] = useState(provider);
+  if (prevProvider !== provider) {
+    setPrevProvider(provider);
+    if (animationState === 'idle' || animationState === 'opening') {
+      setAnimationState('closing');
     }
-  }, [provider, displayProvider, animationState]);
+  }
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -145,6 +149,14 @@ export const BlinkingLogo = ({ provider, onProviderChange }: BlinkingLogoProps) 
         className={`${styles.container} ${styles[animationState]}`}
         onClick={handleToggle}
         style={logoStyle}
+        role={onProviderChange ? 'button' : undefined}
+        tabIndex={onProviderChange ? 0 : undefined}
+        onKeyDown={(e) => {
+          if (onProviderChange && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            handleToggle(e as unknown as React.MouseEvent);
+          }
+        }}
       >
         <ProviderModelIcon
           providerId={displayProvider}
@@ -156,10 +168,10 @@ export const BlinkingLogo = ({ provider, onProviderChange }: BlinkingLogoProps) 
       {isOpen && (
         <div
           ref={dropdownRef}
-          className="selector-dropdown"
+          className="selector-dropdown provider-dropdown"
           style={DROPDOWN_STYLE}
         >
-          {AVAILABLE_PROVIDERS.map((p) => (
+          {visibleProviders.map((p) => (
             <div
               key={p.id}
               className={`selector-option ${p.id === provider ? 'selected' : ''} ${!p.enabled ? 'disabled' : ''}`}
@@ -167,18 +179,27 @@ export const BlinkingLogo = ({ provider, onProviderChange }: BlinkingLogoProps) 
                 e.stopPropagation();
                 handleSelect(p.id);
               }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleSelect(p.id);
+                }
+              }}
               style={getProviderOptionStyle(!!p.enabled)}
             >
               <ProviderModelIcon providerId={p.id} size={16} colored />
               <span>{getProviderLabel(p.id)}</span>
               <span className="provider-option-trailing">
+                {p.id === provider && (
+                  <span className="provider-active-dot" aria-hidden="true" />
+                )}
                 {p.beta && (
                   <span className="provider-beta-badge">
                     {t('providers.beta.badge', { defaultValue: 'Beta' })}
                   </span>
-                )}
-                {p.id === provider && (
-                  <span className="codicon codicon-check check-mark" />
                 )}
               </span>
             </div>

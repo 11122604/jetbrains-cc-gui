@@ -16,6 +16,8 @@ vi.mock('react-i18next', () => ({
         'providers.codex.label': 'Codex',
         'providers.grok.label': 'Grok CLI',
         'providers.kimi.label': 'Kimi CLI',
+        'providers.minimax.label': 'MiniMax Code',
+        'providers.zcode.label': 'ZCode',
         'providers.opencode.label': 'OpenCode',
         'providers.pi.label': 'PI CLI',
         'providers.omp.label': 'OMP CLI',
@@ -43,14 +45,14 @@ describe('ProviderSelect Beta badge and first-click notice', () => {
     window.updateCodexSubscriptionQuota = undefined;
   });
 
-  it('renders Beta badges on Grok, Kimi, OpenCode, PI, OMP and DSH', () => {
+  it('renders Beta badges on Grok, Kimi, MiniMax, ZCode, OpenCode, PI, OMP and DSH', () => {
     render(<ProviderSelect value="claude" />);
     fireEvent.click(screen.getByRole('button'));
 
     const badges = screen.getAllByText('Beta');
-    expect(badges).toHaveLength(6);
+    expect(badges).toHaveLength(8);
 
-    for (const id of ['grok', 'kimi', 'opencode', 'pi', 'omp', 'dsh']) {
+    for (const id of ['grok', 'kimi', 'minimax', 'zcode', 'opencode', 'pi', 'omp', 'dsh']) {
       const row = document.querySelector(`[data-provider-id="${id}"]`);
       expect(row?.querySelector('.provider-beta-badge')).toBeTruthy();
     }
@@ -73,10 +75,47 @@ describe('ProviderSelect Beta badge and first-click notice', () => {
       )
     ).toBeTruthy();
 
+    const overlay = document.querySelector('.confirm-dialog-overlay');
+    // Toolbar uses container-type, which traps position:fixed descendants.
+    // The notice must mount on document.body so Got it / overlay click stay reachable.
+    expect(overlay).toBeTruthy();
+    expect(overlay?.parentElement).toBe(document.body);
+
     fireEvent.click(screen.getByText('Got it'));
 
     expect(onChange).toHaveBeenCalledWith('grok');
     expect(localStorage.getItem(BETA_PROVIDER_NOTICE_KEY)).toBe('true');
+    expect(document.querySelector('.confirm-dialog-overlay')).toBeNull();
+  });
+
+  it('dismisses the beta notice when clicking the overlay', () => {
+    const onChange = vi.fn();
+    render(<ProviderSelect value="claude" onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole('button'));
+    fireEvent.click(screen.getByText('DeepSeek Harness'));
+
+    const overlay = document.querySelector('.confirm-dialog-overlay');
+    expect(overlay).toBeTruthy();
+    expect(overlay?.parentElement).toBe(document.body);
+    fireEvent.click(overlay!);
+
+    expect(onChange).toHaveBeenCalledWith('dsh');
+    expect(document.querySelector('.confirm-dialog-overlay')).toBeNull();
+  });
+
+  it('dismisses the beta notice on Escape', () => {
+    const onChange = vi.fn();
+    render(<ProviderSelect value="claude" onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole('button'));
+    fireEvent.click(screen.getByText('OpenCode'));
+
+    expect(document.querySelector('.confirm-dialog-overlay')).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(onChange).toHaveBeenCalledWith('opencode');
+    expect(document.querySelector('.confirm-dialog-overlay')).toBeNull();
   });
 
   it('does not show the notice again after it was acknowledged', () => {

@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  REASONING_LEVELS,
-  EFFORT_SUPPORTED_CLAUDE_MODELS,
-  MAX_EFFORT_CLAUDE_MODELS,
-  XHIGH_EFFORT_CLAUDE_MODELS,
-  codexModelSupportsMaxEffort,
-  type ReasoningEffort,
-} from '../types';
+import { REASONING_LEVELS, type ReasoningEffort } from '../types';
+import { useReasoningEffortGuard } from '../reasoningUtils';
 import { useDropdownPosition } from '../../../hooks/useDropdownPosition';
 
 const RELATIVE_INLINE_BLOCK_STYLE: React.CSSProperties = { position: 'relative', display: 'inline-block' };
@@ -21,6 +15,8 @@ const DROPDOWN_STYLE: React.CSSProperties = {
   overflowX: 'hidden',
 };
 const LEVEL_INFO_STYLE: React.CSSProperties = { display: 'flex', flexDirection: 'column', flex: 1 };
+/** Five two-line rows; only the viewport should clip, not a 300px design cap. */
+const SUBMENU_MAX_HEIGHT_PX = 480;
 
 interface ReasoningSelectProps {
   value: ReasoningEffort;
@@ -28,6 +24,9 @@ interface ReasoningSelectProps {
   disabled?: boolean;
   selectedModel?: string;
   currentProvider?: string;
+  embedded?: boolean;
+  triggerRef?: React.RefObject<HTMLElement | null>;
+  onClose?: () => void;
 }
 
 /**
@@ -39,54 +38,36 @@ interface ReasoningSelectProps {
  * - Claude Sonnet 5, Sonnet 4.7, Opus 4.6, and Sonnet 4.6: low/medium/high/max
  * - Claude Haiku 4.5 and legacy models: hidden (no adaptive thinking support)
  */
-export const ReasoningSelect = ({ value, onChange, disabled, selectedModel, currentProvider }: ReasoningSelectProps) => {
+export const ReasoningSelect = ({
+  value,
+  onChange,
+  disabled,
+  selectedModel,
+  currentProvider,
+  embedded = false,
+  triggerRef,
+  onClose,
+}: ReasoningSelectProps) => {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const { positionedStyle, recalculate } = useDropdownPosition({
-    buttonRef,
+  const { positionedStyle, maxHeight, maxWidth, recalculate } = useDropdownPosition({
+    buttonRef: (embedded ? triggerRef : buttonRef) as React.RefObject<HTMLElement | null>,
     dropdownRef,
     preferredAlignment: 'right',
+    submenu: embedded,
+    minWidth: embedded ? 180 : 200,
+    maxWidth: 280,
+    submenuMaxHeight: SUBMENU_MAX_HEIGHT_PX,
   });
 
-  // Determine visibility: for Claude, hide if model doesn't support adaptive thinking
-  const isVisible = currentProvider !== 'claude' || !selectedModel || EFFORT_SUPPORTED_CLAUDE_MODELS.has(selectedModel);
-
-  // Build the list of available levels for the current model
-  const availableLevels = REASONING_LEVELS.filter(level => {
-    // Grok CLI only accepts low|medium|high.
-    if (currentProvider === 'grok') {
-      return level.id === 'low' || level.id === 'medium' || level.id === 'high';
-    }
-    if (currentProvider === 'codex') {
-      return level.id !== 'max' || (selectedModel !== undefined && codexModelSupportsMaxEffort(selectedModel));
-    }
-    if (currentProvider !== 'claude') {
-      return level.id !== 'max';
-    }
-    if (!selectedModel) {
-      return true;
-    }
-    if (level.id === 'xhigh') {
-      return XHIGH_EFFORT_CLAUDE_MODELS.has(selectedModel);
-    }
-    if (level.id === 'max') {
-      return MAX_EFFORT_CLAUDE_MODELS.has(selectedModel);
-    }
-    return true;
-  });
-
-  const currentLevel = availableLevels.find(l => l.id === value) || availableLevels[availableLevels.length - 2] || availableLevels[0];
-
-  useEffect(() => {
-    if (!isVisible || availableLevels.some(level => level.id === value)) {
-      return;
-    }
-    if (currentLevel) {
-      onChange(currentLevel.id);
-    }
-  }, [availableLevels, currentLevel, isVisible, onChange, value]);
+  const { isVisible, availableLevels, currentLevel } = useReasoningEffortGuard(
+    value,
+    onChange,
+    selectedModel,
+    currentProvider,
+  );
 
   /**
    * Get translated text for reasoning level
@@ -116,15 +97,19 @@ export const ReasoningSelect = ({ value, onChange, disabled, selectedModel, curr
   const handleSelect = useCallback((effort: ReasoningEffort) => {
     onChange(effort);
     setIsOpen(false);
-  }, [onChange]);
+    onClose?.();
+  }, [onChange, onClose]);
 
   /**
    * Close on outside click
    */
   useEffect(() => {
-    if (!isOpen) return;
+    if (embedded || !isOpen) return;
 
+    let armed = false;
+    const timer = setTimeout(() => { armed = true; }, 0);
     const handleClickOutside = (e: MouseEvent) => {
+      if (!armed) return;
       if (
         dropdownRef.current &&
         !dropdownRef.current.contains(e.target as Node) &&
@@ -135,23 +120,72 @@ export const ReasoningSelect = ({ value, onChange, disabled, selectedModel, curr
       }
     };
 
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handleClickOutside);
-    }, 0);
-
+    document.addEventListener('mousedown', handleClickOutside);
     return () => {
       clearTimeout(timer);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isOpen]);
+  }, [embedded, isOpen]);
 
   useLayoutEffect(() => {
-    if (isOpen) {
+    if (embedded || isOpen) {
       recalculate();
     }
-  }, [isOpen, recalculate]);
+  }, [embedded, isOpen, recalculate]);
 
   if (!isVisible) return null;
+  if (!currentLevel) return null;
+
+  const dropdownStyle: React.CSSProperties = embedded
+    ? {
+        minWidth: 0,
+        maxWidth: maxWidth ?? 280,
+        ...(maxHeight != null
+          ? { maxHeight: `${maxHeight}px`, overflowY: 'auto' as const }
+          : { overflowY: 'visible' as const }),
+        ...positionedStyle,
+      }
+    : { ...DROPDOWN_STYLE, ...positionedStyle };
+
+  const renderDropdown = () => (
+        <div
+          ref={dropdownRef}
+          className="selector-dropdown"
+          data-testid="reasoning-selector-dropdown"
+          style={dropdownStyle}
+          onMouseEnter={(e) => e.stopPropagation()}
+        >
+          {availableLevels.map((level) => (
+            <div
+              key={level.id}
+              className={`selector-option ${level.id === value ? 'selected' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => handleSelect(level.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleSelect(level.id);
+                }
+              }}
+              title={getReasoningText(level.id, 'description')}
+            >
+              <span className={`codicon ${level.icon}`} />
+              <div style={LEVEL_INFO_STYLE}>
+                <span>{getReasoningText(level.id, 'label')}</span>
+                <span className="mode-description">{getReasoningText(level.id, 'description')}</span>
+              </div>
+              {level.id === value && (
+                <span className="codicon codicon-check check-mark" />
+              )}
+            </div>
+          ))}
+        </div>
+  );
+
+  if (embedded) {
+    return renderDropdown();
+  }
 
   return (
     <div style={RELATIVE_INLINE_BLOCK_STYLE}>
@@ -167,31 +201,7 @@ export const ReasoningSelect = ({ value, onChange, disabled, selectedModel, curr
         <span className={`codicon codicon-chevron-${isOpen ? 'up' : 'down'}`} style={CHEVRON_ICON_STYLE} />
       </button>
 
-      {isOpen && (
-        <div
-          ref={dropdownRef}
-          className="selector-dropdown"
-          style={{ ...DROPDOWN_STYLE, ...positionedStyle }}
-        >
-          {availableLevels.map((level) => (
-            <div
-              key={level.id}
-              className={`selector-option ${level.id === value ? 'selected' : ''}`}
-              onClick={() => handleSelect(level.id)}
-              title={getReasoningText(level.id, 'description')}
-            >
-              <span className={`codicon ${level.icon}`} />
-              <div style={LEVEL_INFO_STYLE}>
-                <span>{getReasoningText(level.id, 'label')}</span>
-                <span className="mode-description">{getReasoningText(level.id, 'description')}</span>
-              </div>
-              {level.id === value && (
-                <span className="codicon codicon-check check-mark" />
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      {isOpen && renderDropdown()}
     </div>
   );
 };

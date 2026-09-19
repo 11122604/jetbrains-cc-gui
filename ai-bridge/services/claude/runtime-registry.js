@@ -5,9 +5,13 @@ const anonymousRuntimesBySignature = new Map();
 let activeTurnRuntime = null;
 
 const RUNTIME_MAX_ABSOLUTE_LIFETIME_MS = 6 * 60 * 60 * 1000;
-const ANONYMOUS_RUNTIME_MAX_IDLE_MS = 10 * 60 * 1000;
-const SESSION_RUNTIME_MAX_IDLE_MS = 30 * 60 * 1000;
-const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+// Deliberately aggressive: an idle SDK subprocess is disposed after 60s and the
+// next message lazily respawns it with --resume. Active turns, in-flight CLI
+// output, and tracked background tasks are exempt (see canDisposeIdleRuntime),
+// and RUNTIME_MAX_ABSOLUTE_LIFETIME_MS backstops any protection leak.
+const ANONYMOUS_RUNTIME_MAX_IDLE_MS = 60 * 1000;
+const SESSION_RUNTIME_MAX_IDLE_MS = 60 * 1000;
+const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000;
 
 export {
   RUNTIME_MAX_ABSOLUTE_LIFETIME_MS,
@@ -74,7 +78,19 @@ export function findRuntimeForRequest(requestContext) {
   if (requestContext.requestedSessionId) {
     return runtimesBySessionId.get(requestContext.requestedSessionId) || null;
   }
-  return anonymousRuntimesBySignature.get(requestContext.runtimeSignature) || null;
+  const exact = anonymousRuntimesBySignature.get(requestContext.runtimeSignature);
+  if (exact) return exact;
+  // A bypass transition changes the spawn-time signature before the next
+  // request arrives. Only consider a pending runtime from the same anonymous
+  // session epoch; otherwise a request could dispose another session's runtime.
+  if (!requestContext.runtimeSessionEpoch) return null;
+  for (const runtime of anonymousRuntimes) {
+    if (runtime.runtimeSignature === '__rebuild-pending-bypass-change__'
+        && runtime.runtimeSessionEpoch === requestContext.runtimeSessionEpoch) {
+      return runtime;
+    }
+  }
+  return null;
 }
 
 export function beginRuntimeTurn(runtime) {
@@ -96,6 +112,8 @@ export function canDisposeIdleRuntime(runtime, now, maxIdleMs) {
   if (!runtime || runtime.closed) return false;
   if (now - runtime.createdAt > RUNTIME_MAX_ABSOLUTE_LIFETIME_MS) return true;
   if ((runtime.activeTurnCount || 0) > 0) return false;
+  if (runtime.cliTurnInFlight) return false;
+  if ((runtime.backgroundTaskIds?.size || 0) > 0) return false;
   return now - runtime.lastUsedAt > maxIdleMs;
 }
 

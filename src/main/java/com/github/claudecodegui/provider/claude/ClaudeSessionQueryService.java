@@ -3,6 +3,8 @@ package com.github.claudecodegui.provider.claude;
 import com.github.claudecodegui.bridge.EnvironmentConfigurator;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.bridge.ProcessManager;
+import com.github.claudecodegui.provider.common.SessionHistoryIncompleteException;
+import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.util.PlatformUtils;
 import com.github.claudecodegui.util.UserMessageSanitizer;
 import com.google.gson.Gson;
@@ -67,6 +69,10 @@ class ClaudeSessionQueryService {
         try {
             JsonObject jsonResult = runSessionQuery("getSession", sessionId, cwd, "getSessionMessages");
 
+            if (jsonResult.has("missing") && jsonResult.get("missing").getAsBoolean()) {
+                throw new SessionHistoryNotFoundException(sessionId, cwd);
+            }
+
             if (jsonResult.has("success") && jsonResult.get("success").getAsBoolean()) {
                 List<JsonObject> messages = new ArrayList<>();
                 if (jsonResult.has("messages")) {
@@ -76,6 +82,18 @@ class ClaudeSessionQueryService {
                     }
                 }
                 return messages;
+            }
+
+            // The bridge retries a torn JSONL tail in-process before answering
+            // (HISTORY_READ_RETRIES in session-service.js), so an `incomplete`
+            // response means the writer is still appending to a transcript that the
+            // live state already reflects. It is reported as its own exception so
+            // the caller keeps the live transcript instead of surfacing a failure.
+            if (jsonResult.has("incomplete") && jsonResult.get("incomplete").getAsBoolean()) {
+                throw new SessionHistoryIncompleteException(
+                        jsonResult.has("error") && !jsonResult.get("error").isJsonNull()
+                                ? jsonResult.get("error").getAsString()
+                                : "Session history is still being written");
             }
 
             String errorMsg = (jsonResult.has("error") && !jsonResult.get("error").isJsonNull())
@@ -100,7 +118,8 @@ class ClaudeSessionQueryService {
      */
     JsonObject getSessionMessagesPage(String sessionId, String cwd, Integer beforeTurn, int limit) {
         try {
-            JsonObject jsonResult = runSessionQuery("getSessionPage", sessionId, cwd, "getSessionMessagesPage");
+            JsonObject jsonResult = runSessionQuery("getSessionPage", sessionId, cwd, "getSessionMessagesPage",
+                    beforeTurn == null ? "" : String.valueOf(beforeTurn), String.valueOf(limit));
 
             if (jsonResult.has("success") && jsonResult.get("success").getAsBoolean()) {
                 // Normalize messages in-place
@@ -147,6 +166,10 @@ class ClaudeSessionQueryService {
     }
 
     private JsonObject runSessionQuery(String commandName, String sessionId, String cwd, String logPrefix) throws Exception {
+        return runSessionQuery(commandName, sessionId, cwd, logPrefix, new String[0]);
+    }
+
+    private JsonObject runSessionQuery(String commandName, String sessionId, String cwd, String logPrefix, String... extraArgs) throws Exception {
         if (sessionId == null || !VALID_SESSION_ID.matcher(sessionId).matches()) {
             throw new IllegalArgumentException("Invalid sessionId: " + sessionId);
         }
@@ -170,6 +193,9 @@ class ClaudeSessionQueryService {
             cwdArg = NodeDetector.isWslPath(node) ? NodeDetector.convertToWslPath(cwd) : cwd;
         }
         command.add(cwdArg);
+        for (String extraArg : extraArgs) {
+            command.add(extraArg);
+        }
 
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workDir);

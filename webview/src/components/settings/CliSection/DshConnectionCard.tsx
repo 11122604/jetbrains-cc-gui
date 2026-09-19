@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { openBrowser } from '../../../utils/bridge';
+import DshCardHeader from './DshCardHeader';
+import DshMoreMenu from './DshMoreMenu';
+import DshStatusBadge from './DshStatusBadge';
+import type { DshStateKey, DshStatusPayload } from './dshTypes';
 import styles from './style.module.less';
 
 /**
@@ -15,29 +18,6 @@ import styles from './style.module.less';
  * DSH (DeepSeek Harness) runs as one persistent local `dsh web` host; the
  * plugin adopts an already-running host and never kills adopted processes.
  */
-
-interface DshStatusPayload {
-  success?: boolean;
-  installed?: boolean;
-  version?: string;
-  bin?: string;
-  origin?: string;
-  hostRunning?: boolean;
-  ownership?: 'spawned' | 'adopted';
-  error?: string;
-  describe?: {
-    version?: string;
-    provider?: string;
-    model?: string;
-    attachedSessions?: number;
-  };
-  settings?: {
-    bin?: string;
-    host?: string;
-    port?: number;
-    autoStart?: boolean;
-  };
-}
 
 const DSH_STATUS_TIMEOUT_MS = 30_000;
 
@@ -58,7 +38,12 @@ const parsePayload = (dataOrStr: string | DshStatusPayload): DshStatusPayload | 
   }
 };
 
-const DshConnectionCard = () => {
+interface DshConnectionCardProps {
+  /** Nested under the DeepSeek Harness group — role row, not a second product. */
+  nested?: boolean;
+}
+
+const DshConnectionCard = ({ nested = false }: DshConnectionCardProps) => {
   const { t } = useTranslation();
   const [status, setStatus] = useState<DshStatusPayload | null>(null);
   const [busy, setBusy] = useState(false);
@@ -117,7 +102,7 @@ const DshConnectionCard = () => {
   const origin = status?.origin || '';
   const ownership = status?.ownership;
 
-  let stateKey: 'checking' | 'notInstalled' | 'notRunning' | 'connected';
+  let stateKey: DshStateKey;
   if (busy && !status) {
     stateKey = 'checking';
   } else if (status && installed === false) {
@@ -130,82 +115,43 @@ const DshConnectionCard = () => {
     stateKey = 'checking';
   }
 
-  const stateBadgeClass =
-    stateKey === 'connected' ? styles.ok : stateKey === 'checking' ? '' : styles.missing;
+  const canStart = (stateKey === 'notRunning' || stateKey === 'notInstalled') && installed !== false;
+  const canOpenWebUi = stateKey === 'connected' && Boolean(origin);
+  const canStop = stateKey === 'connected' && ownership === 'spawned';
 
   return (
-    <div className={`${styles.cliCard} ${styles.dshCard}`}>
-      <div className={styles.cliMain}>
-        <div className={styles.cliIcon}>
-          <span className="codicon codicon-server-process" aria-hidden="true" />
-        </div>
-        <span className={styles.cliName}>{t('settings.cli.dsh.cardTitle')}</span>
-        {status?.version && <span className={styles.versionBadge}>v{status.version}</span>}
-        <span className={styles.cliMeta} title={status?.error || origin}>
-          {stateKey === 'connected' && origin
-            ? `${origin} · ${status?.describe?.provider ?? ''}/${status?.describe?.model ?? ''}`
-            : status?.error || t('settings.cli.dsh.hint')}
-        </span>
-      </div>
+    <div
+      className={`${styles.cliCard} ${styles.dshCard} ${nested ? styles.nestedCard : ''}`}
+      data-testid="dsh-host-card"
+    >
+      <DshCardHeader nested={nested} status={status} origin={origin} stateKey={stateKey} />
 
       <div className={styles.cliActions}>
-        <span className={`${styles.statusBadge} ${stateBadgeClass}`}>
-          {busy && <span className="codicon codicon-loading codicon-modifier-spin" aria-hidden="true" />}
-          {t(`settings.cli.dsh.state.${stateKey}`)}
-          {stateKey === 'connected' && ownership === 'adopted' && (
-            <span title={t('settings.cli.dsh.adoptedHint')}> · {t('settings.cli.dsh.adopted')}</span>
-          )}
-        </span>
+        <DshStatusBadge busy={busy} stateKey={stateKey} ownership={ownership} />
 
-        <div className={styles.actionButtons}>
-          {stateKey === 'connected' && origin && (
-            <button
-              type="button"
-              className={styles.iconBtn}
-              onClick={() => openBrowser(origin)}
-              title={t('settings.cli.dsh.openWebUi')}
-              aria-label={t('settings.cli.dsh.openWebUi')}
-            >
-              <span className="codicon codicon-globe" />
-            </button>
-          )}
-          {(stateKey === 'notRunning' || stateKey === 'notInstalled') && installed !== false && (
-            <button
-              type="button"
-              className={styles.primaryBtn}
-              disabled={busy}
-              onClick={() => request('start_dsh_host')}
-            >
-              <span className="codicon codicon-play" aria-hidden="true" />
-              {t('settings.cli.dsh.startHost')}
-            </button>
-          )}
-          {stateKey === 'connected' && ownership === 'spawned' && (
-            <button
-              type="button"
-              className={styles.iconBtn}
-              disabled={busy}
-              onClick={() => request('stop_dsh_host')}
-              title={t('settings.cli.dsh.stopHost')}
-              aria-label={t('settings.cli.dsh.stopHost')}
-            >
-              <span className="codicon codicon-debug-stop" />
-            </button>
-          )}
-        </div>
+        {canStart && (
+          <button
+            type="button"
+            className={styles.primaryBtn}
+            disabled={busy}
+            onClick={() => request('start_dsh_host')}
+          >
+            <span className="codicon codicon-play" aria-hidden="true" />
+            {t('settings.cli.dsh.startHost')}
+          </button>
+        )}
 
-        <label
-          className={styles.dshAutoStart}
-          title={status ? undefined : t('settings.cli.dsh.state.checking')}
-        >
-          <input
-            type="checkbox"
-            checked={status?.settings?.autoStart !== false}
-            disabled={!status}
-            onChange={(e) => toggleAutoStart(e.target.checked)}
-          />
-          <span>{t('settings.cli.dsh.autoStart')}</span>
-        </label>
+        {!canStart && <span className={styles.divider} aria-hidden="true" />}
+
+        <DshMoreMenu
+          busy={busy}
+          status={status}
+          origin={origin}
+          canOpenWebUi={canOpenWebUi}
+          canStop={canStop}
+          onStopHost={() => request('stop_dsh_host')}
+          onToggleAutoStart={toggleAutoStart}
+        />
       </div>
     </div>
   );

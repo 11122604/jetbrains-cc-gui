@@ -220,14 +220,23 @@ export function useFileTags({
       const hashIndex = filePath.indexOf('#');
       const pureFilePath = hashIndex !== -1 ? filePath.substring(0, hashIndex) : filePath;
       const pureFileName = pureFilePath.split(/[/\\]/).pop() || pureFilePath;
+      const isRegistered = pathMappingRef.current.has(pureFilePath)
+        || pathMappingRef.current.has(pureFileName)
+        || pathMappingRef.current.has(filePath);
+      if (isRegistered) return true;
+
+      // Preserve the existing single-reference fallback for a manually typed
+      // absolute path or line reference. Boundaries are only ambiguous when
+      // another @ marker also starts an absolute-looking path; ordinary @
+      // text (emails, annotations) must not disable the fallback. Accepting
+      // an absolute-looking fallback alongside another path-like marker can
+      // absorb ordinary text between two references (issue #1726).
+      const absoluteAtMarkers = currentText.match(/@(?=(?:[a-zA-Z]:[/\\]|\\\\|\/))/g);
+      if (absoluteAtMarkers !== null && absoluteAtMarkers.length > 1) return false;
+
       const hasLineNumber = /#L\d+/.test(filePath);
       const isAbsolutePath = /^[a-zA-Z]:[/\\]/.test(filePath) || filePath.startsWith('/');
-
-      return pathMappingRef.current.has(pureFilePath)
-        || pathMappingRef.current.has(pureFileName)
-        || pathMappingRef.current.has(filePath)
-        || hasLineNumber
-        || isAbsolutePath;
+      return hasLineNumber || isAbsolutePath;
     };
 
     const matches = findMatches(currentText);

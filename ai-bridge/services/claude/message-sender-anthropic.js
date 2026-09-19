@@ -81,7 +81,7 @@ export async function sendMessageWithAnthropicSDK(message, resumeSessionId, cwd,
     console.log('[DEBUG] Auth type:', authType || 'api_key (default)');
 
     const userContent = (Array.isArray(attachments) && attachments.length > 0)
-      ? await buildContentBlocks(attachments, message, modelId)
+      ? await buildContentBlocks(attachments, message)
       : [{ type: 'text', text: message }];
 
     persistJsonlMessage(sessionId, cwd, {
@@ -239,5 +239,11 @@ Possible causes:
       console.error('[ERROR_DETAILS] Status:', error.response.status);
       console.error('[ERROR_DETAILS] Data:', JSON.stringify(error.response.data));
     }
+    // Always close the turn with terminal markers. loadSessionHistory now throws
+    // on an unreadable transcript instead of returning []; without [MESSAGE_END]
+    // and a terminal JSON line the reader would wait for its timeout with no
+    // surfaced error.
+    console.log('[MESSAGE_END]');
+    console.log(JSON.stringify({ success: false, error: error.message }));
   }
 }

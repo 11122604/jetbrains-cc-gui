@@ -76,8 +76,11 @@ export async function handleClaudeCommand(command, args, stdinData) {
       // cursor never leaves the user with an empty chat.
       const sessionId = stdinData?.sessionId || args[0];
       const cwd = stdinData?.cwd || args[1] || null;
-      const beforeTurn = stdinData?.beforeTurn !== undefined ? stdinData.beforeTurn : null;
-      const limit = stdinData?.limit || 30;
+      const beforeTurnRaw = stdinData?.beforeTurn ?? (args[2] !== '' && args[2] !== undefined ? args[2] : null);
+      const parsedBeforeTurn = Number(beforeTurnRaw);
+      const beforeTurn = Number.isInteger(parsedBeforeTurn) && parsedBeforeTurn >= 0 ? parsedBeforeTurn : null;
+      const parsedLimit = Number(stdinData?.limit ?? args[3]);
+      const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 200) : 30;
       await claudeGetSessionMessagesPage(sessionId, cwd, beforeTurn, limit);
       break;
     }

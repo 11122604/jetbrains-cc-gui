@@ -1,6 +1,9 @@
 import { isJavaFqcnCandidate, normalizeFileNavigationTarget, parseFileLinkTarget } from './linkify';
 
 const BRIDGE_UNAVAILABLE_WARNED = new Set<string>();
+/** Canonical GitHub repository URL, used by star/promo banners across the UI. */
+export const GITHUB_REPO_URL = 'https://github.com/zhukunpenglinyutong/jetbrains-cc-gui';
+
 const SAFE_BROWSER_PROTOCOLS = /^(https?|mailto):/i;
 
 /** Regex to detect path traversal: matches ".." as a path segment, not as part of filenames */
@@ -223,6 +226,20 @@ export const openBrowser = (url?: string) => {
     return;
   }
   sendBridgeEvent('open_browser', url);
+};
+
+/**
+ * Open a URL in the OS default browser (outside the IDE's embedded JCEF
+ * preview). Use for external docs whose SPA pages render blank inside JCEF.
+ */
+export const openBrowserExternal = (url?: string) => {
+  if (!url) {
+    return;
+  }
+  if (!SAFE_BROWSER_PROTOCOLS.test(url)) {
+    return;
+  }
+  sendBridgeEvent('open_browser_external', url);
 };
 
 export const sendToJava = (message: string, payload: any = {}) => {

@@ -103,8 +103,7 @@
     "retrySdkStatus": "重试",
     "openSourceBanner": "本项目保证100%开源和免费（谨防盗版项目）",
     "openSourceBannerStar": "点个 Star",
-    "openSourceBannerStarToast": "已复制仓库地址到剪切板，复制到浏览器即可访问 ⭐",
-    "openSourceBannerStarAria": "复制仓库地址并前往 GitHub 点 Star",
+    "openSourceBannerStarAria": "前往 GitHub 点 Star",
     "goInstallSdk": "前往安装",
     "sdkTooLowForFable": "Claude SDK 版本过低，Fable 模型可能无法使用。请在设置中更新 Claude Code SDK。",
     "updateSdk": "更新 SDK",
@@ -332,6 +331,7 @@
       "retryAttempts": "重试次数",
       "catalogColumns": "每行卡片数",
       "catalogPageSize": "每页数量",
+      "catalogSort": "排序方式",
       "pageSizeOption": "每页 {{count}} 个",
       "pageJump": "跳转到",
       "goToPage": "跳转到页面",
@@ -480,7 +480,9 @@
           "kimi": "Kimi CLI",
           "opencode": "OpenCode",
           "pi": "PI CLI",
-          "omp": "OMP CLI"
+          "omp": "OMP CLI",
+          "minimax": "MiniMax Code",
+          "zcode": "ZCode"
         },
         "currentProviderAuto": "当前使用自动选择：{{provider}}",
         "currentProviderManual": "当前使用手动选择的 provider：{{provider}}",
@@ -636,6 +638,14 @@
       "copied": "已复制到剪贴板",
       "copyFailed": "复制失败",
       "tools": {
+        "minimax": {
+          "name": "MiniMax Code",
+          "description": "MiniMax 终端编码智能体。需 Node.js 22.19+ / 24+（不支持 23）；命令：minimax / mcode"
+        },
+        "zcode": {
+          "name": "ZCode",
+          "description": "智谱 ZCode 桌面编码应用（GLM 模型）"
+        },
         "grok": {
           "name": "Grok CLI",
           "description": "xAI Grok 终端编码助手"
@@ -658,7 +668,7 @@
         },
         "dsh": {
           "name": "DeepSeek Harness",
-          "description": "DeepSeek 终端智能体宿主（常驻 dsh web）"
+          "description": "DeepSeek 终端智能体 CLI（dsh）"
         }
       },
       "installDialog": {
@@ -677,8 +687,15 @@
       "summary": "{{installed}} / {{total}} 已安装",
       "moreComingSoon": "即将支持更多",
       "copyPath": "复制路径",
+      "visibility": {
+        "hide": "在切换菜单中隐藏",
+        "show": "在切换菜单中显示"
+      },
       "dsh": {
-        "cardTitle": "DeepSeek Harness (DSH)",
+        "groupTitle": "DeepSeek Harness",
+        "cliRowTitle": "CLI 安装",
+        "cardTitle": "本机宿主",
+        "rowHint": "启动或接管本机 dsh web",
         "hint": "DSH 由本机一个常驻 dsh web 宿主承载所有会话；插件会接管已在运行的宿主，而不会重复启动。",
         "state": {
           "checking": "检测中…",
@@ -691,7 +708,8 @@
         "openWebUi": "打开 DSH Web UI",
         "startHost": "立即启动",
         "stopHost": "关闭（仅限插件启动的宿主）",
-        "autoStart": "需要时自动启动"
+        "autoStart": "需要时自动启动",
+        "moreActions": "更多"
       }
     },
     "pluginModels": {
@@ -883,11 +901,18 @@
     "versionHistoryDesc": "查看所有版本更新记录",
     "communityQrTip": "使用微信扫一扫",
     "communityQrAlt": "官方微信交流群二维码",
-    "githubTitle": "GitHub 开源地址",
-    "githubDesc": "本项目已在 GitHub 开源，欢迎 Star 支持",
-    "githubCopyBtn": "复制开源地址",
-    "githubCopied": "开源地址已复制到剪切板，请在浏览器中访问",
-    "githubCopyFailed": "复制失败，请手动复制",
+    "socialDocs": "官方文档",
+    "socialTitle": "关注我们",
+    "socialGithub": "GitHub 开源仓库，欢迎 Star",
+    "socialX": "X（Twitter）@ZPeng31310",
+    "socialZhihu": "知乎 @vscodeai",
+    "socialXiaohongshu": "小红书",
+    "socialDouyin": "抖音，鼠标悬停扫码关注",
+    "socialYoutube": "YouTube 频道 @昆鹏马上优化",
+    "douyinQrAlt": "抖音二维码",
+    "douyinId": "抖音号：nengyongai",
+    "douyinCopied": "抖音号已复制到剪贴板",
+    "douyinCopyFailed": "复制失败，请手动复制",
     "sponsor": "赞助支持",
     "sponsorDesc": "如果这个项目对你有帮助，欢迎赞助支持，你的支持是我持续维护的动力！",
     "alipay": "支付宝",
@@ -1777,7 +1802,32 @@
     "bashGroupAllCompleted": "全部完成",
     "bashGroupFailed": "失败",
     "updatePlan": "更新计划",
-    "applyPatch": "应用补丁"
+    "applyPatch": "应用补丁",
+    "reportFindings": {
+      "title": "审查发现",
+      "findingsCount_one": "{{count}} 条发现",
+      "findingsCount_other": "{{count}} 条发现",
+      "confirmedCount_one": "{{count}} 条已确认",
+      "confirmedCount_other": "{{count}} 条已确认",
+      "plausibleCount_one": "{{count}} 条待复核",
+      "plausibleCount_other": "{{count}} 条待复核",
+      "confirmed": "已确认",
+      "plausible": "待复核",
+      "fixed": "已修复",
+      "skipped": "已跳过",
+      "noChangeNeeded": "无需修改",
+      "empty": "未发现问题",
+      "summaryLabel": "审查摘要",
+      "summary": "问题摘要",
+      "failureScenario": "触发场景",
+      "reviewLevel": "审查级别：{{level}}",
+      "openFile": "打开 {{filePath}}",
+      "expandFinding": "展开问题详情",
+      "collapseFinding": "收起问题详情",
+      "expandReport": "展开审查发现",
+      "collapseReport": "收起审查发现",
+      "untitled": "未命名问题"
+    }
   },
   "todo": {
     "inProgress": "进行中 {{completed}}/{{total}} 个任务",
@@ -2033,16 +2083,20 @@
         "label": "Haiku 4.5",
         "description": "Haiku 速度最快，适合快速答复"
       },
-      "opus48": {
-        "label": "Opus 4.8",
-        "description": "Opus 4.8 · 保留的前代 Opus 模型"
+      "fable51": {
+        "label": "Fable 5.1",
+        "description": "Fable 5.1 · 最强大 · Mythos 级"
       },
       "fable5": {
         "label": "Fable 5",
-        "description": "Fable 5 · 最强大 · Mythos 级"
+        "description": "Fable 5 · 保留的前代 Fable 模型"
       }
     },
     "codex": {
+      "gpt6astra": {
+        "label": "GPT-6 Astra",
+        "description": "新一代旗舰模型，擅长自主电脑操作与长链路智能体任务"
+      },
       "gpt56sol": {
         "label": "GPT-5.6 Sol",
         "description": "面向复杂专业工作的前沿模型"
@@ -2071,24 +2125,43 @@
       }
     }
   },
+  "modelConfig": {
+    "title": "模型设置",
+    "context": "1M 上下文",
+    "contextDefault": "默认",
+    "effort": "思考强度",
+    "speed": "速度",
+    "preset": "预设",
+    "model": "模型"
+  },
   "modes": {
     "default": {
       "label": "默认模式",
+      "shortLabel": "默认",
       "tooltip": "标准权限行为",
       "description": "需要手动确认每个操作，适合谨慎使用"
     },
     "plan": {
       "label": "规划模式",
+      "shortLabel": "规划",
       "tooltip": "规划模式——只读分析",
       "description": "仅使用只读工具，生成计划供用户审批后执行"
     },
     "acceptEdits": {
       "label": "代理模式",
+      "shortLabel": "代理",
       "tooltip": "自动接受文件编辑",
       "description": "自动接受文件创建/编辑，减少确认步骤"
     },
+    "auto": {
+      "label": "自动审批",
+      "shortLabel": "自动",
+      "tooltip": "由模型审查器自动批准或阻止操作",
+      "description": "使用提供商原生审查器处理审批，同时保留安全边界"
+    },
     "bypassPermissions": {
-      "label": "自动模式",
+      "label": "全自动",
+      "shortLabel": "全自动",
       "tooltip": "绕过所有权限检查",
       "description": "完全自动化，绕过所有权限检查【谨慎使用】"
     }
@@ -2096,11 +2169,13 @@
   "codexModes": {
     "default": {
       "label": "建议模式",
+      "shortLabel": "建议",
       "tooltip": "Codex approval_policy=on-request：执行命令或写文件前都会弹窗确认。",
       "description": "最安全的选择，每一步都需要你亲自批准。"
     },
     "plan": {
       "label": "规划模式",
+      "shortLabel": "规划",
       "tooltip": "规划模式——只读分析",
       "description": "仅使用只读工具，生成计划供用户审批后执行"
     },
@@ -2108,6 +2183,12 @@
       "label": "自动编辑",
       "tooltip": "Codex approval_policy=on-request：按需发起审批请求。",
       "description": "平衡模式，保持正常编辑流程，同时在需要时进行审批。"
+    },
+    "auto": {
+      "label": "替我审批",
+      "shortLabel": "自动",
+      "tooltip": "Codex approvals_reviewer=auto_review：由自动审查器处理可审批请求。",
+      "description": "保持 workspace-write 沙箱；审查器无法批准的请求仍会升级处理。"
     },
     "bypassPermissions": {
       "label": "全自动",
@@ -2150,6 +2231,12 @@
     "kimi": {
       "label": "Kimi CLI"
     },
+    "minimax": {
+      "label": "MiniMax Code"
+    },
+    "zcode": {
+      "label": "ZCode"
+    },
     "gemini": {
       "label": "Gemini Cli"
     },
@@ -2169,7 +2256,8 @@
     },
     "dsh": {
       "label": "DeepSeek Harness"
-    }
+    },
+    "manageCli": "CLI 配置管理"
   },
   "promptEnhancer": {
     "title": "增强提示词",

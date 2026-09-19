@@ -16,7 +16,9 @@ interface ContextMenuProps {
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   // State-driven position to avoid React overwriting imperative DOM changes
   const [pos, setPos] = useState({ left: x, top: y });
@@ -69,10 +71,10 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     >
       {items.map((item, i) =>
         item.separator ? (
-          <div key={`sep-${i}`} className="context-menu-separator" role="separator" />
+          <hr key={`sep-${i}`} className="context-menu-separator" />
         ) : (
           <div
-            key={`item-${i}`}
+            key={item.label}
             className={`context-menu-item${item.disabled ? ' disabled' : ''}`}
             role="menuitem"
             aria-disabled={item.disabled || false}

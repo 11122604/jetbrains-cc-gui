@@ -7,9 +7,11 @@ import com.github.claudecodegui.provider.claude.ClaudeHistoryReader;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader;
 import com.github.claudecodegui.provider.grok.GrokHistoryReader;
 import com.github.claudecodegui.provider.kimi.KimiHistoryReader;
+import com.github.claudecodegui.provider.minimax.MiniMaxHistoryReader;
 import com.github.claudecodegui.provider.opencode.OpenCodeHistoryReader;
 import com.github.claudecodegui.provider.pi.PiHistoryReader;
 import com.github.claudecodegui.provider.omp.OmpHistoryReader;
+import com.github.claudecodegui.provider.zcode.ZcodeHistoryReader;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -106,7 +108,7 @@ class HistoryExportService {
                                             "  console.error('[Backend->Frontend] onExportSessionData not available!'); " +
                                             "}";
 
-                    context.executeJavaScriptOnEDT(jsCode);
+                    context.executeJavaScriptQueued(jsCode);
                 });
 
                 LOG.info("[HistoryHandler] ========== 导出会话完成 ==========");
@@ -118,7 +120,7 @@ class HistoryExportService {
                     String jsCode = "if (window.addToast) { " +
                                             "  window.addToast('导出失败: " + context.escapeJs(e.getMessage() != null ? e.getMessage() : "未知错误") + "', 'error'); " +
                                             "}";
-                    context.executeJavaScriptOnEDT(jsCode);
+                    context.executeJavaScriptQueued(jsCode);
                 });
             }
         });
@@ -143,6 +145,14 @@ class HistoryExportService {
         if ("kimi".equals(provider)) {
             LOG.info("[HistoryHandler] 使用 KimiHistoryReader 导出 Kimi 会话");
             return toJsonArray(new KimiHistoryReader().getSessionMessages(sessionId, projectPath));
+        }
+        if ("minimax".equals(provider)) {
+            LOG.info("[HistoryHandler] 使用 MiniMaxHistoryReader 导出 MiniMax 会话");
+            return toJsonArray(new MiniMaxHistoryReader().getSessionMessages(sessionId, projectPath));
+        }
+        if ("zcode".equals(provider)) {
+            LOG.info("[HistoryHandler] 使用 ZcodeHistoryReader 导出 ZCode 会话");
+            return toJsonArray(new ZcodeHistoryReader().getSessionMessages(sessionId, projectPath));
         }
         if ("pi".equals(provider)) {
             LOG.info("[HistoryHandler] 使用 PiHistoryReader 导出 PI 会话");

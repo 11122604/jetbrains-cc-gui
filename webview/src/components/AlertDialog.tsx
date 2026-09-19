@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 export type AlertType = 'error' | 'warning' | 'info' | 'success';
@@ -27,6 +28,8 @@ const AlertDialog = ({
 }: AlertDialogProps) => {
   const { t } = useTranslation();
   const buttonText = confirmText || t('common.confirm');
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+
   useEffect(() => {
     if (isOpen) {
       const handleEscape = (e: KeyboardEvent) => {
@@ -37,7 +40,15 @@ const AlertDialog = ({
       window.addEventListener('keydown', handleEscape);
       return () => window.removeEventListener('keydown', handleEscape);
     }
-  }, [isOpen]); // Remove onClose from dependencies - it's stable from props
+  }, [isOpen, onClose]);
+
+  // Focus the confirm button on open (replacing the removed autoFocus
+  // attribute) so Enter/Escape dismissal works as before.
+  useEffect(() => {
+    if (isOpen) {
+      confirmButtonRef.current?.focus();
+    }
+  }, [isOpen]);
 
   if (!isOpen) {
     return null;
@@ -76,7 +87,9 @@ const AlertDialog = ({
     lineHeight: 1,
   };
 
-  return (
+  // Portal to body: .button-area container-type makes position:fixed
+  // descendants toolbar-sized, which clips the confirm button.
+  return createPortal(
     <div className="confirm-dialog-overlay" onClick={onClose}>
       <div className="confirm-dialog alert-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="confirm-dialog-header" style={DIALOG_HEADER_STYLE}>
@@ -90,12 +103,13 @@ const AlertDialog = ({
           <p className="confirm-dialog-message" style={PRE_WRAP_STYLE}>{message}</p>
         </div>
         <div className="confirm-dialog-footer" style={JUSTIFY_CENTER_STYLE}>
-          <button className="confirm-dialog-button confirm-button" onClick={onClose} autoFocus>
+          <button className="confirm-dialog-button confirm-button" onClick={onClose} ref={confirmButtonRef}>
             {buttonText}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

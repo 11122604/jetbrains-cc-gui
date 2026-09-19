@@ -51,7 +51,7 @@ export function useCompletionTriggerDetection({
 
   /**
    * Detect and handle completion triggers
-   * Optimized: only start detection when @ or / or # is input
+   * Optimized: only start detection when a supported trigger symbol is present
    */
   const detectAndTriggerCompletion = useCallback(() => {
     const timer = perfTimer('detectAndTriggerCompletion');
@@ -224,7 +224,9 @@ export function useCompletionTriggerDetection({
   // spawn a new debounce per render — orphaned timers then fire with stale
   // closures (e.g. isOpen=false) and redundantly re-open/clear the dropdown.
   const detectRef = useRef(detectAndTriggerCompletion);
-  detectRef.current = detectAndTriggerCompletion;
+  useEffect(() => {
+    detectRef.current = detectAndTriggerCompletion;
+  });
 
   const debouncedDetectCompletion = useMemo(
     () => debounce(() => detectRef.current(), DEBOUNCE_TIMING.COMPLETION_DETECTION_MS),

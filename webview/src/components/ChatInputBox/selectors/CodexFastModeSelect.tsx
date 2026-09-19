@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CodexFastMode } from '../types';
+import { useDropdownPosition } from '../../../hooks/useDropdownPosition';
 
 const RELATIVE_INLINE_BLOCK_STYLE: React.CSSProperties = { position: 'relative', display: 'inline-block' };
 const CHEVRON_ICON_STYLE: React.CSSProperties = { fontSize: '10px', marginLeft: '2px' };
@@ -16,6 +17,9 @@ const MODE_INFO_STYLE: React.CSSProperties = { display: 'flex', flexDirection: '
 interface CodexFastModeSelectProps {
   value: CodexFastMode;
   onChange: (mode: CodexFastMode) => void;
+  embedded?: boolean;
+  triggerRef?: React.RefObject<HTMLElement | null>;
+  onClose?: () => void;
 }
 
 const CODEX_FAST_MODE_OPTIONS: Array<{
@@ -38,11 +42,25 @@ const CODEX_FAST_MODE_OPTIONS: Array<{
   },
 ];
 
-export const CodexFastModeSelect = ({ value, onChange }: CodexFastModeSelectProps) => {
+export const CodexFastModeSelect = ({
+  value,
+  onChange,
+  embedded = false,
+  triggerRef,
+  onClose,
+}: CodexFastModeSelectProps) => {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const { positionedStyle, maxHeight, maxWidth, recalculate } = useDropdownPosition({
+    buttonRef: (embedded ? triggerRef : buttonRef) as React.RefObject<HTMLElement | null>,
+    dropdownRef,
+    preferredAlignment: 'right',
+    submenu: embedded,
+    minWidth: embedded ? 180 : 200,
+    maxWidth: 280,
+  });
 
   const currentMode = CODEX_FAST_MODE_OPTIONS.find(mode => mode.id === value) || CODEX_FAST_MODE_OPTIONS[0];
 
@@ -52,18 +70,26 @@ export const CodexFastModeSelect = ({ value, onChange }: CodexFastModeSelectProp
 
   const handleToggle = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    setIsOpen(!isOpen);
-  }, [isOpen]);
+    const nextOpen = !isOpen;
+    setIsOpen(nextOpen);
+    if (nextOpen) {
+      recalculate();
+    }
+  }, [isOpen, recalculate]);
 
   const handleSelect = useCallback((mode: CodexFastMode) => {
     onChange(mode);
     setIsOpen(false);
-  }, [onChange]);
+    onClose?.();
+  }, [onChange, onClose]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (embedded || !isOpen) return;
 
+    let armed = false;
+    const timer = setTimeout(() => { armed = true; }, 0);
     const handleClickOutside = (e: MouseEvent) => {
+      if (!armed) return;
       if (
         dropdownRef.current &&
         !dropdownRef.current.contains(e.target as Node) &&
@@ -74,15 +100,69 @@ export const CodexFastModeSelect = ({ value, onChange }: CodexFastModeSelectProp
       }
     };
 
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handleClickOutside);
-    }, 0);
-
+    document.addEventListener('mousedown', handleClickOutside);
     return () => {
       clearTimeout(timer);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isOpen]);
+  }, [embedded, isOpen]);
+
+  useLayoutEffect(() => {
+    if (embedded || isOpen) {
+      recalculate();
+    }
+  }, [embedded, isOpen, recalculate]);
+
+  const dropdownStyle: React.CSSProperties = embedded
+    ? {
+        minWidth: 0,
+        maxWidth: maxWidth ?? 280,
+        ...(maxHeight != null
+          ? { maxHeight: `${Math.min(300, maxHeight)}px`, overflowY: 'auto' as const }
+          : { overflowY: 'visible' as const }),
+        ...positionedStyle,
+      }
+    : { ...DROPDOWN_STYLE, ...positionedStyle };
+
+  const renderDropdown = () => (
+        <div
+          ref={dropdownRef}
+          className="selector-dropdown"
+          data-testid="codex-fast-mode-dropdown"
+          style={dropdownStyle}
+          onMouseEnter={(e) => e.stopPropagation()}
+        >
+          {CODEX_FAST_MODE_OPTIONS.map((mode) => (
+            <div
+              key={mode.id}
+              className={`selector-option ${mode.id === value ? 'selected' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => handleSelect(mode.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleSelect(mode.id);
+                }
+              }}
+              title={getModeText(mode, 'description')}
+            >
+              <span className={`codicon ${mode.icon}`} />
+              <div style={MODE_INFO_STYLE}>
+                <span>{getModeText(mode, 'label')}</span>
+                <span className="mode-description">{getModeText(mode, 'description')}</span>
+              </div>
+              {mode.id === value && (
+                <span className="codicon codicon-check check-mark" />
+              )}
+            </div>
+          ))}
+        </div>
+  );
+
+  if (embedded) {
+    return renderDropdown();
+  }
 
   return (
     <div style={RELATIVE_INLINE_BLOCK_STYLE}>
@@ -97,31 +177,7 @@ export const CodexFastModeSelect = ({ value, onChange }: CodexFastModeSelectProp
         <span className={`codicon codicon-chevron-${isOpen ? 'up' : 'down'}`} style={CHEVRON_ICON_STYLE} />
       </button>
 
-      {isOpen && (
-        <div
-          ref={dropdownRef}
-          className="selector-dropdown"
-          style={DROPDOWN_STYLE}
-        >
-          {CODEX_FAST_MODE_OPTIONS.map((mode) => (
-            <div
-              key={mode.id}
-              className={`selector-option ${mode.id === value ? 'selected' : ''}`}
-              onClick={() => handleSelect(mode.id)}
-              title={getModeText(mode, 'description')}
-            >
-              <span className={`codicon ${mode.icon}`} />
-              <div style={MODE_INFO_STYLE}>
-                <span>{getModeText(mode, 'label')}</span>
-                <span className="mode-description">{getModeText(mode, 'description')}</span>
-              </div>
-              {mode.id === value && (
-                <span className="codicon codicon-check check-mark" />
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      {isOpen && renderDropdown()}
     </div>
   );
 };

@@ -58,6 +58,33 @@ describe('useFileTags', () => {
     expect(editable.querySelectorAll('.file-tag').length).toBe(0);
   });
 
+  it('does not promote an unregistered absolute path with following text into a tag', () => {
+    const editable = createEditable();
+    const rawText = '@C:/project/templates/view.xml1414 @C:/project/pages/index.vue';
+    editable.textContent = rawText;
+
+    const { result } = setupHook(editable);
+
+    result.current.renderFileTags();
+
+    expect(editable.querySelectorAll('.file-tag').length).toBe(0);
+    expect(editable.textContent).toBe(rawText);
+  });
+
+  it('keeps the manual absolute-path fallback when other @ markers are ordinary text', () => {
+    const editable = createEditable();
+    editable.textContent = 'email user@example.com about @/workspace/src/App.ts ';
+    mockSelection();
+
+    const { result } = setupHook(editable);
+
+    result.current.renderFileTags();
+
+    const tags = editable.querySelectorAll('.file-tag');
+    expect(tags.length).toBe(1);
+    expect(tags[0].getAttribute('data-file-path')).toBe('/workspace/src/App.ts');
+  });
+
   it('does not close completions or rewrite DOM for in-progress @query', () => {
     const editable = createEditable();
     editable.textContent = '@b';
@@ -227,6 +254,55 @@ describe('useFileTags', () => {
       { displayPath: 'src/a.ts', absolutePath: '/abs/src/a.ts' },
       { displayPath: 'my doc.md', absolutePath: '/abs/my doc.md' },
     ]);
+  });
+
+  it('renders only a registered line-number reference with a spaced path', () => {
+    const editable = createEditable();
+    editable.textContent = '@C:/Program Files/src/Main.java#L10-12 ';
+    mockSelection();
+
+    const { result } = setupHook(editable);
+    result.current.pathMappingRef.current.set(
+      'C:/Program Files/src/Main.java',
+      'C:/Program Files/src/Main.java'
+    );
+    result.current.pathMappingRef.current.set(
+      'C:/Program Files/src/Main.java#L10-12',
+      'C:/Program Files/src/Main.java'
+    );
+
+    result.current.renderFileTags();
+
+    expect(editable.querySelector('.file-tag')?.getAttribute('data-file-path')).toBe(
+      'C:/Program Files/src/Main.java#L10-12'
+    );
+  });
+
+  it('keeps mapped markup references separate from text between files', () => {
+    const editable = createEditable();
+    editable.textContent =
+      '@C:/project/templates/view.xml 1414 @C:/project/pages/index.vue ';
+    mockSelection();
+
+    const { result } = setupHook(editable);
+    result.current.pathMappingRef.current.set(
+      'C:/project/templates/view.xml',
+      'C:/project/templates/view.xml'
+    );
+    result.current.pathMappingRef.current.set(
+      'C:/project/pages/index.vue',
+      'C:/project/pages/index.vue'
+    );
+
+    result.current.renderFileTags();
+
+    expect(Array.from(editable.querySelectorAll('.file-tag')).map((tag) =>
+      tag.getAttribute('data-file-path')
+    )).toEqual([
+      'C:/project/templates/view.xml',
+      'C:/project/pages/index.vue',
+    ]);
+    expect(editable.textContent).toContain('1414');
   });
 
   it('handles path at end of text without trailing space', () => {

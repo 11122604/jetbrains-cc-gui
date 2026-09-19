@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useEffectEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatCountdown } from '../utils/helpers';
 import { useDialogCountdownTimeout } from '../hooks/useDialogCountdownTimeout';
@@ -6,6 +6,7 @@ import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from '../utils/permissionDi
 import MarkdownBlock from './MarkdownBlock';
 import { useDialogResize } from '../hooks/useDialogResize';
 import { isEditableEventTarget } from '../utils/isEditableEventTarget';
+import { clearDialogDraft, readDialogDraft, writeDialogDraft } from '../utils/dialogStateStorage';
 import './PlanApprovalDialog.css';
 
 export interface AllowedPrompt {
@@ -19,6 +20,8 @@ export interface PlanApprovalRequest {
   plan?: string;
   allowedPrompts?: AllowedPrompt[];
   timestamp?: string;
+  deadlineMs?: number;
+  dialogToken?: string;
 }
 
 interface PlanApprovalDialogProps {
@@ -29,10 +32,18 @@ interface PlanApprovalDialogProps {
   timeoutSeconds?: number;
 }
 
+interface PlanApprovalDraft {
+  deadlineMs?: number;
+  dialogToken?: string;
+  selectedMode?: string;
+  isCollapsed?: boolean;
+}
+
 // Execution modes available after plan approval
 const EXECUTION_MODES = [
   { id: 'default', labelKey: 'modes.default.label', descriptionKey: 'modes.default.description' },
   { id: 'acceptEdits', labelKey: 'modes.acceptEdits.label', descriptionKey: 'modes.acceptEdits.description' },
+  { id: 'auto', labelKey: 'modes.auto.label', descriptionKey: 'modes.auto.description' },
   { id: 'bypassPermissions', labelKey: 'modes.bypassPermissions.label', descriptionKey: 'modes.bypassPermissions.description' },
 ];
 
@@ -46,57 +57,85 @@ const PlanApprovalDialog = ({
   const { t } = useTranslation();
   const [selectedMode, setSelectedMode] = useState('default');
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [hydratedRequestKey, setHydratedRequestKey] = useState<string | null>(null);
   const { dialogRef, dialogHeight, setDialogHeight, handleResizeStart } = useDialogResize({ minHeight: 200 });
 
   const handleTimeout = useCallback(() => {
     if (request) {
+      clearDialogDraft('planApproval', request.requestId, request.dialogToken);
       onReject(request.requestId);
     }
   }, [request, onReject]);
 
   const { remainingSeconds, isTimeWarning, markSubmitted } = useDialogCountdownTimeout({
     isOpen,
-    requestKey: request?.requestId,
+    requestKey: request?.dialogToken ?? request?.requestId,
     timeoutSeconds,
+    deadlineMs: request?.deadlineMs,
     onTimeout: handleTimeout,
   });
 
   const handleApprove = useCallback(() => {
     if (!request || !markSubmitted()) return;
+    clearDialogDraft('planApproval', request.requestId, request.dialogToken);
     onApprove(request.requestId, selectedMode);
   }, [request, selectedMode, markSubmitted, onApprove]);
 
   const handleReject = useCallback(() => {
     if (!request || !markSubmitted()) return;
+    clearDialogDraft('planApproval', request.requestId, request.dialogToken);
     onReject(request.requestId);
   }, [request, markSubmitted, onReject]);
 
-  useEffect(() => {
-    if (isOpen && request) {
-      setSelectedMode('default');
-      setIsCollapsed(false);
+  // Hydrate draft state exactly once per request via render-time adjustment:
+  // the key is derived during render and the previous-key state tracks which
+  // request has already been hydrated (no effect chain, no extra commit).
+  const requestKey = isOpen && request ? request.dialogToken ?? request.requestId : null;
+  if (hydratedRequestKey !== requestKey) {
+    setHydratedRequestKey(requestKey);
+    if (requestKey !== null && request) {
+      const draft = readDialogDraft<PlanApprovalDraft>('planApproval', request.requestId, request.deadlineMs, request.dialogToken);
+      const restoredMode = draft?.selectedMode;
+      const selectedModeIsValid = EXECUTION_MODES.some((mode) => mode.id === restoredMode);
+      setSelectedMode(selectedModeIsValid ? restoredMode! : 'default');
+      setIsCollapsed(draft?.isCollapsed === true);
       setDialogHeight(null);
     }
-  }, [isOpen, request?.requestId, setDialogHeight]);
+  }
+
+  useEffect(() => {
+    const requestId = request?.requestId;
+    const deadlineMs = request?.deadlineMs;
+    if (!isOpen || requestId === undefined) {
+      return;
+    }
+    writeDialogDraft('planApproval', requestId, {
+      deadlineMs,
+      dialogToken: request?.dialogToken,
+      selectedMode,
+      isCollapsed,
+    });
+  }, [isCollapsed, isOpen, request?.requestId, request?.dialogToken, request?.deadlineMs, selectedMode]);
 
   // Keyboard event handling
+  const handleDialogKeyDown = useEffectEvent((e: KeyboardEvent) => {
+    if (isEditableEventTarget(e.target)) {
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      handleReject();
+    } else if (e.key === 'Enter') {
+      handleApprove();
+    }
+  });
+
   useEffect(() => {
     if (isOpen && request) {
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (isEditableEventTarget(e.target)) {
-          return;
-        }
-
-        if (e.key === 'Escape') {
-          handleReject();
-        } else if (e.key === 'Enter') {
-          handleApprove();
-        }
-      };
-      window.addEventListener('keydown', handleKeyDown);
-      return () => window.removeEventListener('keydown', handleKeyDown);
+      window.addEventListener('keydown', handleDialogKeyDown);
+      return () => window.removeEventListener('keydown', handleDialogKeyDown);
     }
-  }, [isOpen, request, handleApprove, handleReject]);
+  }, [isOpen, request]);
 
   if (!isOpen || !request) {
     return null;

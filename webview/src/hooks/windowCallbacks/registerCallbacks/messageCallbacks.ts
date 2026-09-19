@@ -28,10 +28,29 @@ import { collectUnresolvedToolUseIds } from './streamingCallbacks';
 
 const isTruthy = (v: unknown) => v === true || v === 'true';
 
+/** Build a bounded signature for a structural JSON value. */
+function getStructuralValueSignature(value: unknown): string {
+  let serialized: string;
+  try {
+    serialized = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
+  // Two independent hashes (Java-style + FNV-1a) make a collision-driven
+  // missed structural change practically impossible.
+  let hash = 0;
+  let fnv = 0x811c9dc5;
+  for (let i = 0; i < serialized.length; i += 1) {
+    const code = serialized.charCodeAt(i);
+    hash = ((hash << 5) - hash + code) | 0;
+    fnv = Math.imul(fnv ^ code, 0x01000193);
+  }
+  return `${serialized.length}:${hash}:${fnv}`;
+}
+
 /**
- * Build a lightweight string signature from non-text raw blocks so we can
- * cheaply detect structural changes (new tool_use/tool_result blocks) without
- * a full JSON.stringify of arbitrary objects.
+ * Build a lightweight signature from non-text raw blocks so structural changes
+ * can be detected without retaining another full JSON snapshot.
  */
 function getStructuralRawBlockSignature(
   message: ClaudeMessage,
@@ -50,15 +69,15 @@ function getStructuralRawBlockSignature(
     if (type === 'text' || type === 'thinking') continue;
 
     if (type === 'tool_use') {
-      parts.push(`tu:${block.id ?? ''}:${block.name ?? ''}`);
+      parts.push(`tu:${block.id ?? ''}:${block.name ?? ''}:${getStructuralValueSignature(block.input)}`);
     } else if (type === 'tool_result') {
-      parts.push(`tr:${block.tool_use_id ?? ''}:${block.is_error === true ? '1' : '0'}`);
+      parts.push(`tr:${block.tool_use_id ?? ''}:${block.is_error === true ? '1' : '0'}:${getStructuralValueSignature(block.content)}`);
     } else if (type === 'attachment') {
       parts.push(`at:${block.fileName ?? ''}:${block.mediaType ?? ''}`);
     } else if (type === 'image') {
-      parts.push(`im:${block.src ?? ''}:${block.mediaType ?? ''}`);
+      parts.push(`im:${getStructuralValueSignature(block.src)}:${block.mediaType ?? ''}`);
     } else {
-      parts.push(type);
+      parts.push(`${type}:${getStructuralValueSignature(block)}`);
     }
   }
 
@@ -117,12 +136,11 @@ export function registerMessageCallbacks(
   };
 
   // During streaming, buffer updateMessages calls and process only the latest
-  // one per animation frame. This prevents JSON.parse of large payloads from
-  // blocking the main thread on every coalescer push (which can arrive every
-  // 50ms), eliminating the "fake freeze" symptom.
+  // one per short (~16ms) timer. Structural snapshots are sparse, but a single
+  // snapshot can still be large enough to block the browser while parsing.
   //
   // Stored on `window` so that if registerMessageCallbacks is called again
-  // (e.g., HMR, parent re-render), the previous pending rAF is cancelled
+  // (e.g., HMR, parent re-render), the previous pending timer is cancelled
   // first — preventing stale closures from executing.
   if (window.__pendingUpdateRaf != null) {
     clearTimeout(window.__pendingUpdateRaf);
@@ -171,6 +189,7 @@ export function registerMessageCallbacks(
     window.__pendingUpdateRaf = null;
     window.__pendingUpdateJson = null;
     window.__pendingUpdateSequence = null;
+    window.__streamingDeltaRenderDeferred = false;
   };
   window.__cancelPendingUpdateMessages = cancelPendingUpdateMessages;
 
@@ -499,7 +518,14 @@ export function registerMessageCallbacks(
           ? Math.max(0, storedBaseIndex)
           : 0;
         const backendMessageCount = prev.length - prependedCount;
+        // A tail cannot bridge a missing prefix in an existing full transcript.
+        // Retain it until a complete snapshot arrives; empty pages can start a window.
         const hasFullPrefix = currentBaseIndex === 0 && baseIndex <= backendMessageCount;
+        const startsTailWindow = baseIndex > 0
+          && (currentBaseIndex > 0 || prev.length === 0);
+        if (!hasFullPrefix && !startsTailWindow && baseIndex > 0) {
+          return prev;
+        }
         let merged = hasFullPrefix
           ? [...prev.slice(0, prependedCount + baseIndex), ...tail]
           : [...prependedHistory, ...tail];
@@ -589,6 +615,7 @@ export function registerMessageCallbacks(
           if (latestJson) {
             processUpdateMessages(latestJson, latestSequence);
           }
+          window.__flushDeferredStreamingRenders?.();
         }, 16);
         pendingUpdateRaf = timerId as unknown as number;
         window.__pendingUpdateRaf = timerId as unknown as number;
@@ -707,10 +734,13 @@ export function registerMessageCallbacks(
         if (message.type !== 'user') continue;
         if (getRawUuid(message)) continue;
 
-        const rawText = extractRawBlocks(message.raw)
-          .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-          .map((block) => String(block.text))
-          .join('\n');
+        const rawTextParts: string[] = [];
+        for (const block of extractRawBlocks(message.raw)) {
+          if (block?.type === 'text' && typeof block.text === 'string') {
+            rawTextParts.push(String(block.text));
+          }
+        }
+        const rawText = rawTextParts.join('\n');
         if ((message.content || '') !== content && rawText !== content) continue;
 
         const raw: ClaudeMessage['raw'] =
@@ -778,6 +808,7 @@ export function registerMessageCallbacks(
     }
     window.__deniedToolIds?.clear();
     window.__codexHistoryPageInfo = undefined;
+    window.__claudeHistoryPageInfo = undefined;
     for (const pending of pendingCodexHistoryPages.values()) {
       clearTimeout(pending.timeoutId);
     }
@@ -958,6 +989,21 @@ export function registerMessageCallbacks(
     try {
       const info = JSON.parse(json) as CodexHistoryPageInfo;
       if (currentSessionIdRef.current !== info.sessionId) return;
+      // Cache so a MessageList that mounts after this callback (e.g. provider
+      // switch remount) can still restore the pagination state.
+      // The Java bridge sends a slimmer payload than the codex one; fill the
+      // CodexHistoryPageInfo fields it lacks so both caches share one shape.
+      window.__claudeHistoryPageInfo = {
+        pageId: '',
+        sessionId: info.sessionId,
+        mode: info.cursorReset ? 'replace' : 'prepend',
+        fromTurn: info.fromTurn,
+        toTurn: info.fromTurn,
+        totalTurns: info.totalTurns,
+        hasMore: info.hasMore,
+        loadedMessageCount: 0,
+        cursorReset: info.cursorReset,
+      };
       window.dispatchEvent(new CustomEvent<CodexHistoryPageInfo>('claude-history-page-info', {
         detail: info,
       }));
