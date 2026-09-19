@@ -178,15 +178,20 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
     setRevealedTurnCount(0);
     setLoadingEarlierHistory(false);
     const cached = window.__codexHistoryPageInfo;
+    const claudeCached = window.__claudeHistoryPageInfo;
     setHistoryPageInfo(
-      currentProvider === 'codex' && cached?.sessionId === currentSessionId ? cached ?? null : null,
+      currentProvider === 'codex' && cached?.sessionId === currentSessionId ? cached ?? null
+        : currentProvider === 'claude' && claudeCached?.sessionId === currentSessionId ? claudeCached ?? null
+          : null,
     );
   }
 
   useEffect(() => {
     const handlePageInfo = (event: Event) => {
       const info = (event as CustomEvent<CodexHistoryPageInfo>).detail;
-      if (currentProvider !== 'codex' || !info || info.sessionId !== currentSessionId) return;
+      if (!info || info.sessionId !== currentSessionId) return;
+      // Accept both codex and claude page info events
+      if (currentProvider !== 'codex' && currentProvider !== 'claude') return;
       setHistoryPageInfo(info);
       setLoadingEarlierHistory(false);
       loadingEarlierHistoryRef.current = false;
@@ -201,13 +206,21 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
 
     window.addEventListener('codex-history-page-info', handlePageInfo);
     window.addEventListener('codex-history-page-error', handlePageError);
+    window.addEventListener('claude-history-page-info', handlePageInfo);
+    window.addEventListener('claude-history-page-error', handlePageError);
     const cached = window.__codexHistoryPageInfo;
     if (currentProvider === 'codex' && cached?.sessionId === currentSessionId) {
       setHistoryPageInfo(cached ?? null);
     }
+    const claudeCached = window.__claudeHistoryPageInfo;
+    if (currentProvider === 'claude' && claudeCached?.sessionId === currentSessionId) {
+      setHistoryPageInfo(claudeCached ?? null);
+    }
     return () => {
       window.removeEventListener('codex-history-page-info', handlePageInfo);
       window.removeEventListener('codex-history-page-error', handlePageError);
+      window.removeEventListener('claude-history-page-info', handlePageInfo);
+      window.removeEventListener('claude-history-page-error', handlePageError);
     };
   }, [currentProvider, currentSessionId]);
 
@@ -227,9 +240,10 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
   const shouldCollapse = collapsedCount > 0;
   const nextTurnCount = Math.min(REVEAL_TURN_PAGE_SIZE, hiddenTurnCount);
 
-  const canLoadEarlierFromDisk = Boolean(currentProvider === 'codex'
-    && historyPageInfo?.sessionId === currentSessionId
-    && historyPageInfo?.hasMore);
+  const canLoadEarlierFromDisk = Boolean(
+    (currentProvider === 'codex' && historyPageInfo?.sessionId === currentSessionId && historyPageInfo?.hasMore)
+    || (currentProvider === 'claude' && historyPageInfo?.sessionId === currentSessionId && historyPageInfo?.hasMore)
+  );
   const handleRevealMore = useCallback(() => {
     if (hiddenTurnCount > 0) {
       setRevealedTurnCount((prev) => prev + REVEAL_TURN_PAGE_SIZE);
@@ -241,7 +255,8 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
 
     loadingEarlierHistoryRef.current = true;
     setLoadingEarlierHistory(true);
-    const sent = sendBridgeEvent('load_codex_history_page', JSON.stringify({
+    const eventName = currentProvider === 'codex' ? 'load_codex_history_page' : 'load_claude_history_page';
+    const sent = sendBridgeEvent(eventName, JSON.stringify({
       sessionId: currentSessionId,
       beforeTurn: historyPageInfo.fromTurn,
     }));
@@ -249,7 +264,7 @@ export const MessageList = memo(forwardRef<MessageListRevealHandle, MessageListP
       loadingEarlierHistoryRef.current = false;
       setLoadingEarlierHistory(false);
     }
-  }, [canLoadEarlierFromDisk, currentSessionId, hiddenTurnCount, historyPageInfo]);
+  }, [canLoadEarlierFromDisk, currentSessionId, hiddenTurnCount, historyPageInfo, currentProvider]);
 
   // Imperative API so the in-page search can expand everything before scanning.
   // Returns the number of messages that were just revealed (0 when nothing

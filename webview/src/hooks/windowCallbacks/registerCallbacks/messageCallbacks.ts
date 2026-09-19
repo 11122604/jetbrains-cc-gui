@@ -808,6 +808,7 @@ export function registerMessageCallbacks(
     }
     window.__deniedToolIds?.clear();
     window.__codexHistoryPageInfo = undefined;
+    window.__claudeHistoryPageInfo = undefined;
     for (const pending of pendingCodexHistoryPages.values()) {
       clearTimeout(pending.timeoutId);
     }
@@ -980,6 +981,45 @@ export function registerMessageCallbacks(
       addToast(error.message || 'Failed to load earlier Codex history', 'error');
     } catch (parseError) {
       console.error('[Frontend] Failed to parse Codex history page error:', parseError);
+    }
+  };
+
+  // Claude history pagination callbacks
+  window.claudeHistoryPageInfo = (json: string) => {
+    try {
+      const info = JSON.parse(json) as CodexHistoryPageInfo;
+      if (currentSessionIdRef.current !== info.sessionId) return;
+      // Cache so a MessageList that mounts after this callback (e.g. provider
+      // switch remount) can still restore the pagination state.
+      // The Java bridge sends a slimmer payload than the codex one; fill the
+      // CodexHistoryPageInfo fields it lacks so both caches share one shape.
+      window.__claudeHistoryPageInfo = {
+        pageId: '',
+        sessionId: info.sessionId,
+        mode: info.cursorReset ? 'replace' : 'prepend',
+        fromTurn: info.fromTurn,
+        toTurn: info.fromTurn,
+        totalTurns: info.totalTurns,
+        hasMore: info.hasMore,
+        loadedMessageCount: 0,
+        cursorReset: info.cursorReset,
+      };
+      window.dispatchEvent(new CustomEvent<CodexHistoryPageInfo>('claude-history-page-info', {
+        detail: info,
+      }));
+    } catch (error) {
+      console.error('[Frontend] Failed to parse Claude history page info:', error);
+    }
+  };
+
+  window.claudeHistoryPageError = (json: string) => {
+    try {
+      const error = JSON.parse(json) as { sessionId?: string; message?: string };
+      if (error.sessionId && currentSessionIdRef.current !== error.sessionId) return;
+      window.dispatchEvent(new CustomEvent('claude-history-page-error', { detail: error }));
+      addToast(error.message || 'Failed to load earlier Claude history', 'error');
+    } catch (parseError) {
+      console.error('[Frontend] Failed to parse Claude history page error:', parseError);
     }
   };
 

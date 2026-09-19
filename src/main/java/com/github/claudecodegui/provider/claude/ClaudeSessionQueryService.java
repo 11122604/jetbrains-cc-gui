@@ -107,6 +107,42 @@ class ClaudeSessionQueryService {
         }
     }
 
+    /**
+     * Load a page of session history messages (turn-based pagination).
+     *
+     * @param sessionId the session to load
+     * @param cwd the working directory
+     * @param beforeTurn null for the latest page, or the turn index to load before
+     * @param limit max turns per page
+     * @return the page payload, or null on failure (caller should fall back to getSessionMessages)
+     */
+    JsonObject getSessionMessagesPage(String sessionId, String cwd, Integer beforeTurn, int limit) {
+        try {
+            JsonObject jsonResult = runSessionQuery("getSessionPage", sessionId, cwd, "getSessionMessagesPage",
+                    beforeTurn == null ? "" : String.valueOf(beforeTurn), String.valueOf(limit));
+
+            if (jsonResult.has("success") && jsonResult.get("success").getAsBoolean()) {
+                // Normalize messages in-place
+                if (jsonResult.has("messages")) {
+                    JsonArray messagesArray = jsonResult.getAsJsonArray("messages");
+                    for (int i = 0; i < messagesArray.size(); i++) {
+                        messagesArray.set(i, normalizeClaudeHistoryMessage(messagesArray.get(i).getAsJsonObject()));
+                    }
+                }
+                return jsonResult;
+            }
+
+            String errorMsg = (jsonResult.has("error") && !jsonResult.get("error").isJsonNull())
+                    ? jsonResult.get("error").getAsString()
+                    : "Unknown error";
+            log.warn("[getSessionMessagesPage] Page query failed: " + errorMsg);
+            return null;
+        } catch (Exception e) {
+            log.warn("[getSessionMessagesPage] Page query error: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
     JsonObject getLatestUserMessage(String sessionId, String cwd) {
         try {
             JsonObject jsonResult = runSessionQuery("getLatestUserMessage", sessionId, cwd, "getLatestUserMessage");
@@ -130,6 +166,10 @@ class ClaudeSessionQueryService {
     }
 
     private JsonObject runSessionQuery(String commandName, String sessionId, String cwd, String logPrefix) throws Exception {
+        return runSessionQuery(commandName, sessionId, cwd, logPrefix, new String[0]);
+    }
+
+    private JsonObject runSessionQuery(String commandName, String sessionId, String cwd, String logPrefix, String... extraArgs) throws Exception {
         if (sessionId == null || !VALID_SESSION_ID.matcher(sessionId).matches()) {
             throw new IllegalArgumentException("Invalid sessionId: " + sessionId);
         }
@@ -153,6 +193,9 @@ class ClaudeSessionQueryService {
             cwdArg = NodeDetector.isWslPath(node) ? NodeDetector.convertToWslPath(cwd) : cwd;
         }
         command.add(cwdArg);
+        for (String extraArg : extraArgs) {
+            command.add(extraArg);
+        }
 
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workDir);

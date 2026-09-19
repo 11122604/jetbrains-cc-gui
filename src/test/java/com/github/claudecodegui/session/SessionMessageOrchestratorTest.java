@@ -821,12 +821,121 @@ public class SessionMessageOrchestratorTest {
                 .getAsJsonArray("content").get(1).getAsJsonObject().has("presentation"));
     }
 
+    @Test
+    public void loadEarlierClaudeHistoryPagePrependsOlderTurns() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-page");
+        state.setCwd("/workspace");
+        state.addMessage(new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "newer question", new JsonObject()));
+
+        RecordingCallback callback = new RecordingCallback();
+        SessionCallbackFacade callbackFacade = new SessionCallbackFacade(null);
+        callbackFacade.setCallback(callback);
+
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        historyAccess.messagesPage = createHistoryPage(
+                List.of(createProviderMessage("user", "older question"),
+                        createProviderMessage("assistant", "older answer")),
+                0, 2, 4, true, false);
+
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), callbackFacade, historyAccess, (used, max) -> { }, 0, 0);
+
+        orchestrator.loadEarlierClaudeHistoryPage("session-page", "/workspace", 2).join();
+
+        List<ClaudeSession.Message> messages = state.getMessages();
+        assertEquals(3, messages.size());
+        assertEquals("older question", messages.get(0).content);
+        assertEquals("older answer", messages.get(1).content);
+        assertEquals("newer question", messages.get(2).content);
+        assertEquals(List.of("session-page|0|4|true|false"), callback.claudeHistoryPageInfos);
+        assertTrue(callback.claudeHistoryPageErrors.isEmpty());
+    }
+
+    @Test
+    public void loadEarlierClaudeHistoryPageReplacesTranscriptOnCursorReset() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-page");
+        state.setCwd("/workspace");
+        state.addMessage(new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "live question", new JsonObject()));
+
+        RecordingCallback callback = new RecordingCallback();
+        SessionCallbackFacade callbackFacade = new SessionCallbackFacade(null);
+        callbackFacade.setCallback(callback);
+
+        // The server rejected the stale cursor and answered with the LATEST page:
+        // prepending it would duplicate every live message, so the transcript
+        // must be replaced instead.
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        historyAccess.messagesPage = createHistoryPage(
+                List.of(createProviderMessage("user", "live question"),
+                        createProviderMessage("assistant", "live answer")),
+                0, 2, 2, false, true);
+
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), callbackFacade, historyAccess, (used, max) -> { }, 0, 0);
+
+        orchestrator.loadEarlierClaudeHistoryPage("session-page", "/workspace", 99).join();
+
+        List<ClaudeSession.Message> messages = state.getMessages();
+        assertEquals(2, messages.size());
+        assertEquals("live question", messages.get(0).content);
+        assertEquals("live answer", messages.get(1).content);
+        assertEquals(List.of("session-page|0|2|false|true"), callback.claudeHistoryPageInfos);
+    }
+
+    @Test
+    public void loadEarlierClaudeHistoryPageNotifiesErrorWhenQueryFails() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-page");
+        state.setCwd("/workspace");
+        state.addMessage(new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "live question", new JsonObject()));
+
+        RecordingCallback callback = new RecordingCallback();
+        SessionCallbackFacade callbackFacade = new SessionCallbackFacade(null);
+        callbackFacade.setCallback(callback);
+
+        // messagesPage stays null: the bridge query failed.
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), callbackFacade, historyAccess, (used, max) -> { }, 0, 0);
+
+        orchestrator.loadEarlierClaudeHistoryPage("session-page", "/workspace", 2).join();
+
+        assertEquals(1, state.getMessages().size());
+        assertEquals(1, callback.claudeHistoryPageErrors.size());
+        assertTrue(callback.claudeHistoryPageErrors.get(0).startsWith("session-page|"));
+        assertTrue(callback.claudeHistoryPageInfos.isEmpty());
+    }
+
+    private static JsonObject createHistoryPage(List<JsonObject> messages, int fromTurn, int toTurn,
+                                                int totalTurns, boolean hasMore, boolean cursorReset) {
+        JsonObject page = new JsonObject();
+        page.addProperty("success", true);
+        JsonArray array = new JsonArray();
+        for (JsonObject message : messages) {
+            array.add(message);
+        }
+        page.add("messages", array);
+        page.addProperty("fromTurn", fromTurn);
+        page.addProperty("toTurn", toTurn);
+        page.addProperty("totalTurns", totalTurns);
+        page.addProperty("hasMore", hasMore);
+        page.addProperty("cursorReset", cursorReset);
+        return page;
+    }
+
     private static final class RecordingHistoryAccess implements SessionMessageOrchestrator.SessionHistoryAccess {
         private final AtomicInteger providerHistoryRequests = new AtomicInteger();
         private final AtomicInteger latestClaudeUserMessageRequests = new AtomicInteger();
         private List<JsonObject> providerHistory = List.of();
         private RuntimeException providerHistoryFailure;
         private JsonObject latestClaudeUserMessage;
+        private JsonObject messagesPage;
 
         @Override
         public List<JsonObject> getProviderSessionMessages(String provider, String sessionId, String cwd) {
@@ -842,6 +951,11 @@ public class SessionMessageOrchestratorTest {
             latestClaudeUserMessageRequests.incrementAndGet();
             return latestClaudeUserMessage;
         }
+
+        @Override
+        public JsonObject getProviderSessionMessagesPage(String sessionId, String cwd, Integer beforeTurn, int limit) {
+            return messagesPage;
+        }
     }
 
     private static final class RecordingCallback implements ClaudeSession.SessionCallback {
@@ -849,6 +963,8 @@ public class SessionMessageOrchestratorTest {
         private final List<String> stateChanges = new ArrayList<>();
         private final List<String> messageUuidPatches = new ArrayList<>();
         private final List<String> usageUpdates = new ArrayList<>();
+        private final List<String> claudeHistoryPageInfos = new ArrayList<>();
+        private final List<String> claudeHistoryPageErrors = new ArrayList<>();
 
         @Override
         public void onMessageUpdate(List<ClaudeSession.Message> messages) {
@@ -868,6 +984,16 @@ public class SessionMessageOrchestratorTest {
         @Override
         public void onUserMessageUuidPatched(String content, String uuid) {
             messageUuidPatches.add(content + "|" + uuid);
+        }
+
+        @Override
+        public void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset) {
+            claudeHistoryPageInfos.add(sessionId + "|" + fromTurn + "|" + totalTurns + "|" + hasMore + "|" + cursorReset);
+        }
+
+        @Override
+        public void onClaudeHistoryPageError(String sessionId, String message) {
+            claudeHistoryPageErrors.add(sessionId + "|" + message);
         }
 
         @Override

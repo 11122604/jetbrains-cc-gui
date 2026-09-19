@@ -391,6 +391,41 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
         jsTarget.callJavaScript("onTaskEvent", JsUtils.escapeJs(eventJson));
     }
 
+    @Override
+    public void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset) {
+        if (isInactive()) {
+            return;
+        }
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (isInactive()) {
+                return;
+            }
+            String json = String.format(
+                "{\"sessionId\":\"%s\",\"fromTurn\":%d,\"totalTurns\":%d,\"hasMore\":%b,\"cursorReset\":%b}",
+                JsUtils.escapeJs(sessionId), fromTurn, totalTurns, hasMore, cursorReset
+            );
+            jsTarget.callJavaScript("claudeHistoryPageInfo", JsUtils.escapeJs(json));
+        });
+    }
+
+    @Override
+    public void onClaudeHistoryPageError(String sessionId, String message) {
+        if (isInactive()) {
+            return;
+        }
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (isInactive()) {
+                return;
+            }
+            String json = String.format(
+                "{\"sessionId\":\"%s\",\"message\":\"%s\"}",
+                sessionId != null ? JsUtils.escapeJs(sessionId) : "",
+                JsUtils.escapeJs(message != null ? message : "Unknown error")
+            );
+            jsTarget.callJavaScript("claudeHistoryPageError", JsUtils.escapeJs(json));
+        });
+    }
+
     /**
      * Dispose internal resources. Call when the parent window is disposed.
      */

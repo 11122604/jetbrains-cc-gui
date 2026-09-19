@@ -484,6 +484,17 @@ public class SessionState {
     }
 
     /**
+     * Prepend earlier history messages atomically.
+     *
+     * @param earlierMessages the already parsed, older messages
+     */
+    public void prependMessages(List<ClaudeSession.Message> earlierMessages) {
+        synchronized (messageStateLock) {
+            messages.addAll(0, earlierMessages);
+        }
+    }
+
+    /**
      * Clear all messages.
      */
     public void clearMessages() {
