@@ -98,17 +98,12 @@ export function useCompletionDropdown<T>({
   // Provider changes invalidate pending searches and the old list. Without this
   // boundary, switching between Claude and Codex can let an older request win
   // after the new provider has already rendered.
-  const completionProviderRef = useRef(provider);
-  useEffect(() => {
-    if (completionProviderRef.current === provider) return;
-
-    completionProviderRef.current = provider;
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
-    }
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
+  // The state reset stays here (sanctioned render-time adjustment); the
+  // timer/abort cancellation lives in the provider-keyed effect cleanup
+  // below, because render must stay pure.
+  const [prevProvider, setPrevProvider] = useState(() => provider);
+  if (prevProvider !== provider) {
+    setPrevProvider(() => provider);
     setState(prev => ({
       ...prev,
       isOpen: false,
@@ -119,7 +114,7 @@ export function useCompletionDropdown<T>({
       triggerQuery: null,
       loading: false,
     }));
-  }, [provider]);
+  }
 
   /**
    * Open dropdown
@@ -438,17 +433,20 @@ export function useCompletionDropdown<T>({
     return before + replacement + after;
   }, []);
 
-  // Cleanup
+  // Cleanup: cancel the pending debounce and in-flight search when the provider
+  // changes (and on unmount). The search callback also guards with
+  // `abortControllerRef.current !== controller || signal.aborted`, so a stale
+  // response can never clobber state.
   useEffect(() => {
     return () => {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
       }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
     };
-  }, []);
+  }, [provider]);
 
   return {
     // State
