@@ -44,7 +44,7 @@ public final class Git4IdeaDiffBackend implements GitDiffBackend {
     @Override
     @NotNull
     public String diff(@NotNull Project project, @NotNull Collection<Change> changes) {
-        CommitDiffProvider helpers = new CommitDiffProvider(project, LOG);
+        ContentDiffSupport helpers = new ContentDiffSupport(LOG);
         GitRepositoryManager mgr = GitRepositoryManager.getInstance(project);
 
         Map<GitRepository, List<Change>> trackedByRepo = new LinkedHashMap<>();
@@ -116,8 +116,7 @@ public final class Git4IdeaDiffBackend implements GitDiffBackend {
                 handler.addParameters(relPath);
             }
             GitCommandResult result = Git.getInstance().runCommand(handler);
-            String output = String.join("\n", result.getOutput());
-            return output == null ? "" : output;
+            return String.join("\n", result.getOutput());
         } catch (RuntimeException t) {
             LOG.warn("Git4IdeaDiffBackend: git diff command failed: " + t.getMessage());
             return "";
