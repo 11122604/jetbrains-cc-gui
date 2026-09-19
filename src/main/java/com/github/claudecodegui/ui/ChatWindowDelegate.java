@@ -623,27 +623,24 @@ public class ChatWindowDelegate {
         }
         host.persistTabSessionState();
 
-        if (pendingQuickFixPrompt != null && pendingQuickFixCallback != null) {
+        if (this.pendingQuickFixPrompt != null && this.pendingQuickFixCallback != null) {
             LOG.info("Processing pending QuickFix message after frontend ready");
-            String prompt = pendingQuickFixPrompt;
-            MessageCallback callback = pendingQuickFixCallback;
-            pendingQuickFixPrompt = null;
-            pendingQuickFixCallback = null;
+            String prompt = this.pendingQuickFixPrompt;
+            MessageCallback callback = this.pendingQuickFixCallback;
+            this.pendingQuickFixPrompt = null;
+            this.pendingQuickFixCallback = null;
             ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                executePendingQuickFix(prompt, callback);
+                this.executePendingQuickFix(prompt, callback);
             });
         }
 
-        // flush(null) may deep-copy live messages left by the previous stream, and
-        // the coalescer contract requires the message-state lock for that copy.
-        // No session means no live writer, so the lockless call is then safe.
-        ClaudeSession currentSession = host.getSession();
-        if (currentSession == null) {
-            host.getStreamCoalescer().flush(null);
-            return;
-        }
-        synchronized (currentSession.getState().getMessageStateLock()) {
-            host.getStreamCoalescer().flush(null);
+        // replayCurrentSessionStateToFrontend already force-fulls the live transcript
+        // through the coalescer. A second flush would serialize the same snapshot
+        // again and discard the first. Only the no-session path still flushes:
+        // replay is a no-op then, and the coalescer may still hold a parked snapshot
+        // from the previous page.
+        if (this.host.getSession() == null) {
+            this.host.getStreamCoalescer().flush(null);
         }
     }
 
