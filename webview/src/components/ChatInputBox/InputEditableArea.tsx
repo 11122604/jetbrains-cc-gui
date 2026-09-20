@@ -2,7 +2,6 @@ import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
-  MutableRefObject,
   RefObject,
 } from 'react';
 import type { TFunction } from 'i18next';
@@ -12,6 +11,7 @@ import {
   insertNewline,
   pasteAtCursor,
 } from '../../hooks/useContextMenu.js';
+
 /** Shape of the context-menu state/handlers used by this component. */
 interface InputContextMenu {
   visible: boolean;
@@ -34,12 +34,6 @@ interface InputEditableAreaProps {
   handleInput: (inputType?: string) => void;
   handleKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
   handleKeyUp: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
-  completionSelectedRef: MutableRefObject<boolean>;
-  /** Whether any completion menu is open (Enter selects instead of submitting) */
-  anyCompletionOpen: boolean;
-  isLoading: boolean;
-  isComposingRef: MutableRefObject<boolean>;
-  onSubmit: () => void;
   handleCompositionStart: () => void;
   handleCompositionEnd: () => void;
   handlePaste: (e: React.ClipboardEvent) => void;
@@ -53,9 +47,11 @@ interface InputEditableAreaProps {
 /**
  * InputEditableArea - The contenteditable input region of ChatInputBox.
  *
- * Renders the editable div (with IME-safe input/beforeinput wiring) plus the
- * right-click context menu overlay. Pure extraction from ChatInputBox; all
- * state and handlers are owned by the parent and passed in as props.
+ * Renders the editable div plus the right-click context menu overlay. Enter
+ * handling is not wired here: React's onBeforeInput is synthesized from
+ * textInput/keypress and never sees `insertParagraph`, so Enter-to-send lives
+ * in useNativeEventCapture (native beforeinput/keydown) and useKeyboardHandler.
+ * All state and handlers are owned by the parent and passed in as props.
  */
 export function InputEditableArea({
   editableWrapperRef,
@@ -67,11 +63,6 @@ export function InputEditableArea({
   handleInput,
   handleKeyDown,
   handleKeyUp,
-  completionSelectedRef,
-  anyCompletionOpen,
-  isLoading,
-  isComposingRef,
-  onSubmit,
   handleCompositionStart,
   handleCompositionEnd,
   handlePaste,
@@ -98,10 +89,8 @@ export function InputEditableArea({
         data-placeholder={placeholder}
         data-completion-suffix={completionSuffix}
         onInput={(e) => {
-          // Don't pass browser's isComposing — it's unreliable in JCEF.
-          // isComposingRef (set by compositionStart/End + keyCode 229) is the
-          // sole source of truth for IME state. The inputType is forwarded so
-          // handleInput can detect a stale composing flag (lost compositionEnd).
+          // JCEF may misreport isComposing. The pipeline uses composition events
+          // and inputType to recover when compositionend goes missing.
           const inputType =
             'inputType' in e.nativeEvent
               ? (e.nativeEvent as InputEvent).inputType
@@ -110,30 +99,6 @@ export function InputEditableArea({
         }}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
-        onBeforeInput={(e) => {
-          const inputType =
-            'inputType' in e.nativeEvent
-              ? (e.nativeEvent as InputEvent).inputType
-              : undefined;
-          if (inputType === 'insertParagraph') {
-            e.preventDefault();
-            // If item was just selected in completion menu with enter, don't send message
-            if (completionSelectedRef.current) {
-              completionSelectedRef.current = false;
-              return;
-            }
-            // Don't send message when completion menu is open
-            if (anyCompletionOpen) {
-              return;
-            }
-            // Only allow submit when not loading and not in IME composition
-            if (!isLoading && !isComposingRef.current) {
-              onSubmit();
-            }
-          }
-          // Fix: Remove delete key special handling during IME
-          // Let browser naturally handle delete operations, sync state uniformly after compositionend
-        }}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
         onPaste={handlePaste}

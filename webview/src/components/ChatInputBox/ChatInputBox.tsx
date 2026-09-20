@@ -111,9 +111,6 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       handleInput,
       handleKeyDown,
       handleKeyUp,
-      completionSelectedRef,
-      isComposingRef,
-      anyCompletionOpen,
       handleSubmit,
       handleCompositionStart,
       handleCompositionEnd,
@@ -137,7 +134,6 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       promptCompletion,
       dollarCommandCompletion,
     } = useChatInputController({
-      isLoading,
       selectedModel,
       currentProvider,
       attachments: externalAttachments,
@@ -229,11 +225,6 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
           handleInput={handleInput}
           handleKeyDown={handleKeyDown}
           handleKeyUp={handleKeyUp}
-          completionSelectedRef={completionSelectedRef}
-          anyCompletionOpen={anyCompletionOpen}
-          isLoading={isLoading}
-          isComposingRef={isComposingRef}
-          onSubmit={handleSubmit}
           handleCompositionStart={handleCompositionStart}
           handleCompositionEnd={handleCompositionEnd}
           handlePaste={handlePaste}

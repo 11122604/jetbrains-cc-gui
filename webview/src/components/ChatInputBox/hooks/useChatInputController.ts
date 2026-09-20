@@ -1,9 +1,10 @@
-import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import type {
   ChatInputBoxHandle,
   ChatInputBoxProps,
   PermissionMode,
+  SendShortcut,
 } from '../types.js';
 import { DEFAULT_CLAUDE_MODEL_ID } from '../types.js';
 import {
@@ -45,10 +46,9 @@ interface UseChatInputControllerOptions
     | 'onOpenAgentSettings'
     | 'onOpenPromptSettings'
   > {
-  isLoading: boolean;
   selectedModel: string;
   currentProvider: string;
-  sendShortcut: 'enter' | 'cmdEnter';
+  sendShortcut: SendShortcut;
   sdkInstalled: boolean;
   sdkStatusLoading: boolean;
   t: TFunction;
@@ -60,11 +60,11 @@ interface UseChatInputControllerOptions
  *
  * Composes the attachments coordinator, session-change reset, text pipeline,
  * submit/enhancer/selection/keyboard/paste hooks and the resizable container,
- * returning everything the ChatInputBox JSX needs. Extracted verbatim from the
- * component body to keep ChatInputBox under size limits; behavior is unchanged.
+ * returning everything the ChatInputBox JSX needs. Keeping this wiring here
+ * gives the component a small render surface while the hooks own each event
+ * stream and its lifecycle.
  */
 export function useChatInputController({
-  isLoading = false,
   selectedModel = DEFAULT_CLAUDE_MODEL_ID,
   currentProvider = 'claude',
   attachments: externalAttachments,
@@ -126,9 +126,6 @@ export function useChatInputController({
   const completionSelectedRef = useRef(false);
   const [hasContent, setHasContent] = useState(false);
 
-  // Flag to track if we're updating from external value
-  const isExternalUpdateRef = useRef(false);
-
   const {
     getTextContent,
     invalidateCache,
@@ -139,7 +136,9 @@ export function useChatInputController({
     clearInput,
     adjustHeight,
     closeAllCompletions,
-    debouncedOnInput,
+    cancelPendingInput,
+    flushPendingInput,
+    notifyInput,
     handleInput,
     isComposingRef,
     lastCompositionEndTimeRef,
@@ -156,7 +155,6 @@ export function useChatInputController({
     handleMacCursorMovement,
   } = useChatInputTextPipeline({
     editableRef,
-    isExternalUpdateRef,
     setHasContent,
     onInput,
     currentProvider,
@@ -177,14 +175,10 @@ export function useChatInputController({
     getTextContent,
     invalidateCache,
     attachments,
-    isLoading,
     sdkStatusLoading,
     sdkInstalled,
     currentProvider,
     clearInput,
-    cancelPendingInput: () => {
-      debouncedOnInput.cancel();
-    },
     externalAttachments,
     setInternalAttachments,
     clearAttachmentsDraft,
@@ -215,7 +209,7 @@ export function useChatInputController({
     editableRef,
     getTextContent,
     setHasContent,
-    onInput,
+    onInput: notifyInput,
     currentProvider,
     selectedModel,
   });
@@ -237,7 +231,7 @@ export function useChatInputController({
     editableRef,
     getTextContent,
     invalidateCache,
-    isExternalUpdateRef,
+    cancelPendingInput,
     setHasContent,
     adjustHeight,
     clearInput,
@@ -254,8 +248,6 @@ export function useChatInputController({
     isComposingRef,
     lastCompositionEndTimeRef,
     sendShortcut,
-    sdkStatusLoading,
-    sdkInstalled,
     fileCompletion,
     commandCompletion,
     agentCompletion,
@@ -276,11 +268,11 @@ export function useChatInputController({
     value,
     editableRef,
     isComposingRef,
-    isExternalUpdateRef,
     getTextContent,
     setHasContent,
     adjustHeight,
     invalidateCache,
+    cancelPendingInput,
   });
 
   useNativeEventCapture({
@@ -297,18 +289,20 @@ export function useChatInputController({
     submittedOnEnterRef,
     handleSubmit,
     handleEnhancePrompt,
+    handleCompositionEnd,
   });
 
-  // Listen for IDEA shortcut send event (dispatched by window.execContextAction)
+  const handleIdeaSend = useEffectEvent(() => {
+    if (!isComposingRef.current) {
+      handleSubmit();
+    }
+  });
+
   useEffect(() => {
-    const handler = () => {
-      if (!isLoading && !isComposingRef.current) {
-        handleSubmit();
-      }
-    };
+    const handler = () => handleIdeaSend();
     document.addEventListener('ideaSend', handler);
     return () => document.removeEventListener('ideaSend', handler);
-  }, [handleSubmit, isLoading, isComposingRef]);
+  }, []);
 
   // Paste and drop hook
   const { handlePaste, handleDragOver, handleDrop } = usePasteAndDrop({
@@ -319,12 +313,10 @@ export function useChatInputController({
     renderFileTags: renderTagsNowIfSafe,
     setHasContent,
     setInternalAttachments,
-    onInput,
+    onInput: notifyInput,
     closeAllCompletions,
     handleInput,
-    flushInput: () => {
-      debouncedOnInput.flush();
-    },
+    flushInput: flushPendingInput,
   });
 
   /**
@@ -356,7 +348,7 @@ export function useChatInputController({
     renderFileTags: renderTagsNowIfSafe,
     renderQuoteTags,
     setHasContent,
-    onInput,
+    onInput: notifyInput,
     closeAllCompletions,
     focusInput,
   });
@@ -371,15 +363,6 @@ export function useChatInputController({
     containerRef,
     editableWrapperRef,
   });
-
-  // Whether any completion menu is open (drives Enter/submit suppression in the
-  // input area's beforeinput handler).
-  const anyCompletionOpen =
-    fileCompletion.isOpen ||
-    commandCompletion.isOpen ||
-    agentCompletion.isOpen ||
-    promptCompletion.isOpen ||
-    dollarCommandCompletion.isOpen;
 
   const promptEnhancer = {
     isOpen: showEnhancerDialog,
@@ -414,9 +397,6 @@ export function useChatInputController({
     handleInput,
     handleKeyDown,
     handleKeyUp,
-    completionSelectedRef,
-    isComposingRef,
-    anyCompletionOpen,
     handleSubmit,
     handleCompositionStart,
     handleCompositionEnd,

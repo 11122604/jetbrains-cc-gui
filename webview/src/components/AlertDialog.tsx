@@ -34,6 +34,8 @@ const AlertDialog = ({
     if (isOpen) {
       const handleEscape = (e: KeyboardEvent) => {
         if (e.key === 'Escape' || e.key === 'Enter') {
+          // Closing may restore focus to a trigger that would receive Enter's click.
+          e.preventDefault();
           onClose();
         }
       };

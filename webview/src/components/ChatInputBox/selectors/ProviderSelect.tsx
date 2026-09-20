@@ -1,14 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { AVAILABLE_PROVIDERS } from '../types';
 import { ProviderModelIcon } from '../../shared/ProviderModelIcon';
 import AlertDialog from '../../AlertDialog';
-import {
-  fetchCodexSubscriptionQuota,
-  subscribeCodexSubscriptionQuota,
-  type CodexSubscriptionQuotaSnapshot,
-} from '../../../utils/codexSubscriptionQuotaCapabilities';
 import { useDropdownPosition } from '../../../hooks/useDropdownPosition';
 import { useBetaProviderNotice } from '../../../hooks/useBetaProviderNotice';
 import { useHiddenCliProviders } from '../../../hooks/useCliProviderVisibility';
@@ -26,8 +21,6 @@ const DROPDOWN_STYLE: React.CSSProperties = {
   maxWidth: 'calc(100vw - 16px)',
 };
 const TOAST_STYLE: React.CSSProperties = { zIndex: 20000 };
-/** Gap (px) between the floating quota panel and the top of the provider dropdown. */
-const SUBMENU_GAP_PX = 4;
 
 interface ProviderSelectProps {
   value: string;
@@ -49,14 +42,13 @@ export const ProviderSelect = ({ value, onChange, compact = false, onOpenCliSett
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [activeSubmenu, setActiveSubmenu] = useState<'none' | 'codexQuota'>('none');
-  const [codexQuota, setCodexQuota] = useState<CodexSubscriptionQuotaSnapshot | null>(null);
-  const [quotaLoading, setQuotaLoading] = useState(false);
-  // Distance (px) from the Codex row's bottom edge up to the floating quota panel,
-  // so it hovers just above the entire dropdown instead of overlapping provider rows.
-  const [submenuBottom, setSubmenuBottom] = useState(0);
+  const menuId = useId();
+  const quotaId = `${menuId}-quota`;
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const { positionedStyle, recalculate } = useDropdownPosition({ buttonRef, dropdownRef });
+  const menuRef = useRef<HTMLDivElement>(null);
+  const openingFocusRef = useRef<'selected' | 'first' | 'last' | null>(null);
+  const { positionedStyle, maxHeight, recalculate } = useDropdownPosition({ buttonRef, dropdownRef });
   const betaNotice = useBetaProviderNotice();
 
   const currentProvider = AVAILABLE_PROVIDERS.find(p => p.id === value) || AVAILABLE_PROVIDERS[0];
@@ -70,18 +62,78 @@ export const ProviderSelect = ({ value, onChange, compact = false, onOpenCliSett
     return t(`providers.${providerId}.label`);
   };
 
-  /**
-   * Toggle dropdown
-   */
+  const closeMenu = useCallback(() => {
+    setIsOpen(false);
+    setActiveSubmenu('none');
+  }, []);
+
   const handleToggle = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    const nextOpen = !isOpen;
-    setIsOpen(nextOpen);
-    setActiveSubmenu('none');
-    if (nextOpen) {
-      recalculate();
+    if (isOpen) {
+      closeMenu();
+    } else {
+      openingFocusRef.current = e.detail === 0 ? 'selected' : null;
+      setIsOpen(true);
     }
-  }, [isOpen, recalculate]);
+  }, [isOpen, closeMenu]);
+
+  const focusMenuItem = useCallback((position: 'selected' | 'first' | 'last') => {
+    const items = menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]');
+    if (!items?.length) return;
+    const selected = menuRef.current?.querySelector<HTMLElement>('[aria-checked="true"]');
+    const target = position === 'selected' ? selected ?? items[0]
+      : position === 'last' ? items[items.length - 1] : items[0];
+    target.focus();
+  }, []);
+
+  const handleTriggerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      event.stopPropagation();
+      const position = event.key === 'ArrowDown' ? 'first' : 'last';
+      if (isOpen) {
+        focusMenuItem(position);
+      } else {
+        openingFocusRef.current = position;
+        setIsOpen(true);
+      }
+    } else if (event.key === 'Tab' && isOpen) {
+      // Pointer opening leaves focus here; remove the footer before native Tab navigation.
+      closeMenu();
+    } else if (event.key === 'Escape' && isOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu();
+    }
+  };
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu();
+      buttonRef.current?.focus();
+      return;
+    }
+    if (event.key === 'Tab') {
+      // Exit from the trigger's place in the toolbar instead of the removed row.
+      closeMenu();
+      buttonRef.current?.focus();
+      return;
+    }
+    if ((event.target as HTMLElement).closest('.provider-quota-panel')) return;
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const items = Array.from(dropdownRef.current?.querySelectorAll<HTMLElement>(
+      '[role="menuitemradio"], .provider-cli-footer-btn',
+    ) ?? []);
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    const nextIndex = event.key === 'Home' ? 0
+      : event.key === 'End' ? items.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[nextIndex]?.focus();
+  };
 
   /**
    * Show toast message
@@ -92,19 +144,6 @@ export const ProviderSelect = ({ value, onChange, compact = false, onOpenCliSett
     setTimeout(() => {
       setShowToast(false);
     }, 1500);
-  }, []);
-
-  const requestCodexQuota = useCallback(() => {
-    setQuotaLoading(true);
-    fetchCodexSubscriptionQuota();
-  }, []);
-
-  useEffect(() => {
-    const unsubscribe = subscribeCodexSubscriptionQuota((snapshot) => {
-      setCodexQuota(snapshot);
-      setQuotaLoading(false);
-    });
-    return unsubscribe;
   }, []);
 
   /**
@@ -124,11 +163,12 @@ export const ProviderSelect = ({ value, onChange, compact = false, onOpenCliSett
     };
 
     // Close the menu immediately so the beta dialog is not hidden behind it.
-    setIsOpen(false);
+    closeMenu();
+    buttonRef.current?.focus();
     // First click on a Beta provider shows an informational notice once.
     // Disabled providers skip the notice — they only show the coming-soon toast.
     betaNotice.requestSelect(!!provider.beta && provider.enabled, proceed);
-  }, [onChange, showToastMessage, t, betaNotice]);
+  }, [onChange, showToastMessage, t, betaNotice, closeMenu]);
 
   /**
    * Close on outside click
@@ -136,68 +176,55 @@ export const ProviderSelect = ({ value, onChange, compact = false, onOpenCliSett
   useEffect(() => {
     if (!isOpen) return;
 
-    // Delay arming the listener to prevent the opening click from closing it
-    let armed = false;
-    const timer = setTimeout(() => { armed = true; }, 0);
     const handleClickOutside = (e: MouseEvent) => {
-      if (!armed) return;
       if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(e.target as Node) &&
-        buttonRef.current &&
-        !buttonRef.current.contains(e.target as Node)
+        !dropdownRef.current?.contains(e.target as Node)
+        && !buttonRef.current?.contains(e.target as Node)
       ) {
-        setIsOpen(false);
+        closeMenu();
       }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen || activeSubmenu !== 'codexQuota') return;
-    requestCodexQuota();
-  }, [activeSubmenu, isOpen, requestCodexQuota]);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen, closeMenu]);
 
   useLayoutEffect(() => {
-    if (isOpen) {
-      recalculate();
+    if (!isOpen) return;
+    recalculate();
+    if (openingFocusRef.current) {
+      focusMenuItem(openingFocusRef.current);
+      openingFocusRef.current = null;
     }
+  }, [isOpen, recalculate, focusMenuItem]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    window.addEventListener('resize', recalculate);
+    return () => window.removeEventListener('resize', recalculate);
   }, [isOpen, recalculate]);
 
-  const handleRowMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>, providerId: string) => {
-    if (providerId === 'codex') {
-      // Float the quota panel just above the entire dropdown so it
-      // never overlaps the provider rows, regardless of panel width.
-      const rowRect = e.currentTarget.getBoundingClientRect();
-      const dropdownRect = dropdownRef.current?.getBoundingClientRect();
-      const bottomOffset = dropdownRect
-        ? rowRect.bottom - dropdownRect.top + SUBMENU_GAP_PX
-        : rowRect.height + SUBMENU_GAP_PX;
-      setSubmenuBottom(Math.round(bottomOffset));
-      setActiveSubmenu('codexQuota');
-    } else {
-      setActiveSubmenu('none');
-    }
-  }, []);
-
-  const handleRowMouseLeave = useCallback((providerId: string) => {
-    if (providerId === 'codex') {
-      setActiveSubmenu('none');
-    }
+  const handleActivate = useCallback((providerId: string) => {
+    setActiveSubmenu(providerId === 'codex' ? 'codexQuota' : 'none');
   }, []);
 
   return (
     <>
-      <div style={RELATIVE_INLINE_BLOCK_STYLE}>
+      <div
+        style={RELATIVE_INLINE_BLOCK_STYLE}
+        onBlur={(event) => {
+          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) closeMenu();
+        }}
+      >
         <button
+          type="button"
           ref={buttonRef}
+          aria-haspopup="menu"
+          aria-expanded={isOpen}
+          aria-controls={isOpen ? menuId : undefined}
           className={`selector-button${compact ? ' provider-compact' : ''}`}
           onClick={handleToggle}
+          onKeyDown={handleTriggerKeyDown}
           title={`${t('config.switchProvider')}: ${getProviderLabel(currentProvider.id)}`}
         >
           <ProviderModelIcon providerId={currentProvider.id} size={compact ? 16 : 12} colored={compact} />
@@ -212,38 +239,45 @@ export const ProviderSelect = ({ value, onChange, compact = false, onOpenCliSett
         {isOpen && (
           <div
             ref={dropdownRef}
-            className="selector-dropdown provider-dropdown"
-            style={{ ...DROPDOWN_STYLE, ...positionedStyle }}
+            className="selector-dropdown provider-dropdown provider-dropdown--scrollable"
+            style={{ ...DROPDOWN_STYLE, ...positionedStyle, maxHeight }}
+            onKeyDown={handleMenuKeyDown}
+            onMouseLeave={() => {
+              const focused = document.activeElement;
+              if (!focused?.matches('[data-provider-id="codex"]')
+                && !focused?.closest('.provider-quota-panel')) {
+                setActiveSubmenu('none');
+              }
+            }}
           >
-            {visibleProviders.map((provider) => (
-              <ProviderOptionRow
-                key={provider.id}
-                provider={provider}
-                isSelected={provider.id === value}
-                label={getProviderLabel(provider.id)}
-                trailingPanel={
-                  activeSubmenu === 'codexQuota' ? (
-                    <CodexQuotaSubmenu
-                      quota={codexQuota}
-                      loading={quotaLoading}
-                      bottom={submenuBottom}
-                      onHover={() => setActiveSubmenu('codexQuota')}
-                    />
-                  ) : undefined
-                }
-                onSelect={handleSelect}
-                onRowMouseEnter={handleRowMouseEnter}
-                onRowMouseLeave={handleRowMouseLeave}
-              />
-            ))}
-            {onOpenCliSettings && (
-              <ProviderCliFooter
-                onOpenCliSettings={() => {
-                  setIsOpen(false);
-                  onOpenCliSettings();
-                }}
-              />
+            {activeSubmenu === 'codexQuota' && (
+              <CodexQuotaSubmenu id={quotaId} anchorRef={dropdownRef} />
             )}
+            <div className="provider-option-list">
+              <div ref={menuRef} id={menuId} role="menu" aria-label={t('config.switchProvider')}>
+                {visibleProviders.map((provider) => (
+                  <ProviderOptionRow
+                    key={provider.id}
+                    provider={provider}
+                    isSelected={provider.id === value}
+                    label={getProviderLabel(provider.id)}
+                    onSelect={handleSelect}
+                    onActivate={handleActivate}
+                    quotaId={activeSubmenu === 'codexQuota' ? quotaId : undefined}
+                  />
+                ))}
+              </div>
+              {onOpenCliSettings && (
+                <div onFocus={() => setActiveSubmenu('none')}>
+                  <ProviderCliFooter
+                    onOpenCliSettings={() => {
+                      closeMenu();
+                      onOpenCliSettings();
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -265,7 +299,10 @@ export const ProviderSelect = ({ value, onChange, compact = false, onOpenCliSett
             'This feature is still in Beta. If you encounter any bugs, please report them to the author promptly.',
         })}
         confirmText={t('common.gotIt', { defaultValue: 'Got it' })}
-        onClose={betaNotice.close}
+        onClose={() => {
+          betaNotice.close();
+          buttonRef.current?.focus();
+        }}
       />
     </>
   );

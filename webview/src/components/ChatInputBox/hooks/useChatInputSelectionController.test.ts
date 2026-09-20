@@ -48,7 +48,7 @@ describe('useChatInputSelectionController', () => {
         editableRef: { current: editable },
         getTextContent: () => editable.innerText,
         invalidateCache: vi.fn(),
-        isExternalUpdateRef: { current: false },
+        cancelPendingInput: vi.fn(),
         setHasContent: vi.fn(),
         adjustHeight: vi.fn(),
         clearInput: vi.fn(),

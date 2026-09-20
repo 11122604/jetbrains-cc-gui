@@ -13,11 +13,9 @@ interface ProviderOptionRowProps {
   provider: ProviderInfo;
   isSelected: boolean;
   label: string;
-  /** Floating panel rendered inside the Codex row (e.g. the quota submenu). */
-  trailingPanel?: React.ReactNode;
   onSelect: (providerId: string) => void;
-  onRowMouseEnter: (e: React.MouseEvent<HTMLDivElement>, providerId: string) => void;
-  onRowMouseLeave: (providerId: string) => void;
+  onActivate: (providerId: string) => void;
+  quotaId?: string;
 }
 
 /**
@@ -27,32 +25,35 @@ export const ProviderOptionRow = ({
   provider,
   isSelected,
   label,
-  trailingPanel,
   onSelect,
-  onRowMouseEnter,
-  onRowMouseLeave,
+  onActivate,
+  quotaId,
 }: ProviderOptionRowProps) => {
   const { t } = useTranslation();
 
   return (
     <div
       className={`selector-option ${isSelected ? 'selected' : ''} ${!provider.enabled ? 'disabled' : ''}`}
-      role="button"
-      tabIndex={0}
+      role="menuitemradio"
+      aria-checked={isSelected}
+      aria-disabled={!provider.enabled || undefined}
+      aria-describedby={provider.id === 'codex' ? quotaId : undefined}
+      tabIndex={-1}
       onClick={() => onSelect(provider.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
+          e.stopPropagation();
           onSelect(provider.id);
         }
       }}
-      style={{
-        ...getProviderOptionStyle(!!provider.enabled),
-        ...(provider.id === 'codex' ? { position: 'relative' } : {}),
-      }}
+      style={getProviderOptionStyle(!!provider.enabled)}
       data-provider-id={provider.id}
-      onMouseEnter={(e) => onRowMouseEnter(e, provider.id)}
-      onMouseLeave={() => onRowMouseLeave(provider.id)}
+      onFocus={() => onActivate(provider.id)}
+      onMouseEnter={() => {
+        // Reaching quota above or below the menu can require crossing other rows.
+        if (provider.id === 'codex') onActivate(provider.id);
+      }}
     >
       <ProviderModelIcon providerId={provider.id} size={16} colored />
       <span>{label}</span>
@@ -72,7 +73,6 @@ export const ProviderOptionRow = ({
           />
         )}
       </span>
-      {provider.id === 'codex' && trailingPanel}
     </div>
   );
 };

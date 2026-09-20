@@ -9,13 +9,10 @@ interface CompletionLike {
 export interface UseSubmitHandlerOptions {
   getTextContent: () => string;
   attachments: Attachment[];
-  isLoading: boolean;
   sdkStatusLoading: boolean;
   sdkInstalled: boolean;
   currentProvider: string;
   clearInput: () => void;
-  /** Cancel any pending debounced input callbacks to prevent stale values from refilling the input */
-  cancelPendingInput: () => void;
   /** Invalidate text content cache to force fresh DOM read on submit */
   invalidateCache: () => void;
   externalAttachments: Attachment[] | undefined;
@@ -49,7 +46,6 @@ export function useSubmitHandler({
   sdkInstalled,
   currentProvider,
   clearInput,
-  cancelPendingInput,
   invalidateCache,
   externalAttachments,
   setInternalAttachments,
@@ -103,9 +99,8 @@ export function useSubmitHandler({
 
     const attachmentsToSend = attachments.length > 0 ? [...attachments] : undefined;
 
-    // Cancel any pending debounced input callbacks before clearing
-    // This prevents stale values from refilling the input after submit
-    cancelPendingInput();
+    // clearInput also drops any queued draft notification, so a stale debounced
+    // value cannot refill the input after submit.
     clearInput();
     if (externalAttachments === undefined) {
       setInternalAttachments([]);
@@ -125,7 +120,6 @@ export function useSubmitHandler({
     sdkInstalled,
     currentProvider,
     clearInput,
-    cancelPendingInput,
     externalAttachments,
     setInternalAttachments,
     clearAttachmentsDraft,
