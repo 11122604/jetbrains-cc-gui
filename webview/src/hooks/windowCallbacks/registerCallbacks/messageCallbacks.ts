@@ -112,6 +112,7 @@ export function registerMessageCallbacks(
     updateContextUsageData,
     closeContextUsageDialog,
     currentSessionIdRef,
+    setRestoredSessionTitle,
   } = options;
 
   const ensureStreamingAssistantPreserved = (prevList: ClaudeMessage[], resultList: ClaudeMessage[]): ClaudeMessage[] => {
@@ -988,6 +989,23 @@ export function registerMessageCallbacks(
   window.claudeHistoryPageInfo = (json: string) => {
     try {
       const info = JSON.parse(json) as CodexHistoryPageInfo;
+      // The page's CLI-derived title keeps the session header stable even when
+      // the loaded span does not include the session's first prompt. It is
+      // stored ahead of the session guard because the guard only protects the
+      // on-screen pagination state: during a Java-driven auto-restore the page
+      // info can beat the setSessionId that the ready replay pushes, and a
+      // title dropped here would never be re-sent. The entry is keyed by
+      // session and re-validated at read time, so storing it early is safe.
+      // Same-content no-op keeps the context value stable across earlier-page
+      // loads, sparing every SessionContext consumer a re-render.
+      const { sessionId, sessionTitle } = info;
+      if (sessionTitle) {
+        setRestoredSessionTitle(prev => (
+          prev && prev.sessionId === sessionId && prev.title === sessionTitle
+            ? prev
+            : { sessionId, title: sessionTitle }
+        ));
+      }
       if (currentSessionIdRef.current !== info.sessionId) return;
       // Cache so a MessageList that mounts after this callback (e.g. provider
       // switch remount) can still restore the pagination state.

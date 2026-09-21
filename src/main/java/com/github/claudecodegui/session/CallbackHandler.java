@@ -171,9 +171,9 @@ public class CallbackHandler {
     /**
      * Notify of Claude history page metadata (for pagination).
      */
-    public void notifyClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset) {
+    public void notifyClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset, String sessionTitle) {
         if (callback != null) {
-            callback.onClaudeHistoryPageInfo(sessionId, fromTurn, totalTurns, hasMore, cursorReset);
+            callback.onClaudeHistoryPageInfo(sessionId, fromTurn, totalTurns, hasMore, cursorReset, sessionTitle);
         }
     }
 

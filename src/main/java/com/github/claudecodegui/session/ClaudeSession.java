@@ -169,8 +169,12 @@ public class ClaudeSession {
          * @param cursorReset true when the server rejected the client cursor and
          *        returned the latest page instead; the client must treat the
          *        current transcript as replaced, not prepended
+         * @param sessionTitle CLI-derived session title (customTitle/aiTitle/
+         *        summary/lastPrompt/firstPrompt chain) carried with the page, or
+         *        null when the transcript has none; lets the header stay stable
+         *        when the loaded page does not include the session's first prompt
          */
-        default void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset) {
+        default void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset, String sessionTitle) {
         }
 
         /**

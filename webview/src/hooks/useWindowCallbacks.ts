@@ -13,6 +13,7 @@ import type { PermissionRequest } from '../components/PermissionDialog';
 import type { AskUserQuestionRequest } from '../components/AskUserQuestionDialog';
 import type { PlanApprovalRequest } from '../components/PlanApprovalDialog';
 import type { RewindRequest } from '../components/RewindDialog';
+import type { RestoredSessionTitle } from '../contexts/SessionContext';
 import { registerWindowCallbacks } from './windowCallbacks/registerCallbacks';
 import { sendBridgeEvent } from '../utils/bridge';
 
@@ -134,6 +135,9 @@ export interface UseWindowCallbacksOptions {
 
   // AI title generation: update the displayed session title when backend generates one
   setCustomSessionTitle: React.Dispatch<React.SetStateAction<string | null>>;
+
+  /** Stores the CLI-derived title carried by a Claude history page payload. */
+  setRestoredSessionTitle: React.Dispatch<React.SetStateAction<RestoredSessionTitle | null>>;
 }
 
 export function useWindowCallbacks(options: UseWindowCallbacksOptions): void {
