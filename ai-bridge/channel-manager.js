@@ -17,6 +17,7 @@
  *   omp      - OMP CLI (no SDK; spawns local `omp` binary)
  *   dsh      - DeepSeek Harness (Host RPC + WS mux against local `dsh web`)
  *   minimax  - MiniMax Code CLI (no SDK; spawns local `minimax` / mcode binary)
+ *   zcode    - ZCode app-server (no SDK; persistent `zcode.cjs app-server` JSON-RPC child)
  *
  * Commands:
  *   send                - Send a message (parameters passed via stdin as JSON)
@@ -40,6 +41,7 @@ import { handlePiCommand } from './channels/pi-channel.js';
 import { handleOmpCommand } from './channels/omp-channel.js';
 import { handleDshCommand } from './channels/dsh-channel.js';
 import { handleMiniMaxCommand } from './channels/minimax-channel.js';
+import { handleZcodeCommand } from './channels/zcode-channel.js';
 import { getSdkStatus, isClaudeSdkAvailable, isCodexSdkAvailable } from './utils/sdk-loader.js';
 import { injectStartupEnvVars, configureCliIdentity } from './config/api-config.js';
 
@@ -154,6 +156,7 @@ const providerHandlers = {
   omp: handleOmpCommand,
   dsh: handleDshCommand,
   minimax: handleMiniMaxCommand,
+  zcode: handleZcodeCommand,
   system: handleSystemCommand
 };
 
@@ -164,7 +167,7 @@ const providerHandlers = {
     // Validate provider
     console.error('[DIAG-EXEC] Validating provider...');
     if (!provider || !providerHandlers[provider]) {
-      console.error('Invalid provider. Use "claude", "codex", "grok", "kimi", "opencode", "pi", "omp", "dsh", "minimax", or "system"');
+      console.error('Invalid provider. Use "claude", "codex", "grok", "kimi", "opencode", "pi", "omp", "dsh", "minimax", "zcode", or "system"');
       writeJsonAndExit({
         success: false,
         error: 'Invalid provider: ' + provider

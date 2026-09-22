@@ -238,7 +238,8 @@
           "opencode": "OpenCode",
           "pi": "PI CLI",
           "omp": "OMP CLI",
-          "minimax": "MiniMax Code"
+          "minimax": "MiniMax Code",
+          "zcode": "ZCode"
         },
         "currentProviderAuto": "Currently using automatic selection: {{provider}}",
         "currentProviderManual": "Currently using manually selected provider: {{provider}}",
@@ -854,6 +855,10 @@
           "name": "MiniMax Code",
           "description": "Agente de código en terminal de MiniMax. Requiere Node.js 22.19+ / 24+ (no 23); comandos: minimax / mcode"
         },
+        "zcode": {
+          "name": "ZCode",
+          "description": "Aplicación de escritorio de codificación ZCode de Zhipu con modelos GLM"
+        },
         "grok": {
           "name": "Grok CLI",
           "description": "xAI Grok terminal coding agent"
@@ -1349,7 +1354,32 @@
     "bashGroupBatchExecution": "Batch Execution",
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
-    "bashGroupFailed": "failed"
+    "bashGroupFailed": "failed",
+    "reportFindings": {
+      "title": "Hallazgos de la revisión",
+      "findingsCount_one": "{{count}} hallazgo",
+      "findingsCount_other": "{{count}} hallazgos",
+      "confirmedCount_one": "{{count}} confirmado",
+      "confirmedCount_other": "{{count}} confirmados",
+      "plausibleCount_one": "{{count}} por revisar",
+      "plausibleCount_other": "{{count}} por revisar",
+      "confirmed": "Confirmado",
+      "plausible": "Por revisar",
+      "fixed": "Corregido",
+      "skipped": "Omitido",
+      "noChangeNeeded": "Sin cambios necesarios",
+      "empty": "Sin hallazgos",
+      "summaryLabel": "Resumen de la revisión",
+      "summary": "Resumen",
+      "failureScenario": "Escenario de fallo",
+      "reviewLevel": "Nivel de revisión: {{level}}",
+      "openFile": "Abrir {{filePath}}",
+      "expandFinding": "Expandir hallazgo",
+      "collapseFinding": "Contraer hallazgo",
+      "expandReport": "Expandir informe de hallazgos",
+      "collapseReport": "Contraer informe de hallazgos",
+      "untitled": "Hallazgo sin título"
+    }
   },
   "todo": {
     "inProgress": "En progreso {{completed}}/{{total}} tareas",
@@ -1712,6 +1742,9 @@
     },
     "minimax": {
       "label": "MiniMax Code"
+    },
+    "zcode": {
+      "label": "ZCode"
     },
     "gemini": {
       "label": "Gemini Cli"

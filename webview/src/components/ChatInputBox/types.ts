@@ -623,6 +623,27 @@ export const MINIMAX_MODELS: ModelInfo[] = [
   },
 ];
 
+/** ZCode default: GLM coding models served by the ZCode app-server. */
+export const ZCODE_DEFAULT_MODEL_ID = 'GLM-5.3';
+
+export const ZCODE_MODELS: ModelInfo[] = [
+  {
+    id: ZCODE_DEFAULT_MODEL_ID,
+    label: 'GLM-5.3',
+    description: 'ZCode coding model',
+  },
+  {
+    id: 'GLM-5.3-Flash',
+    label: 'GLM-5.3 Flash',
+    description: 'ZCode fast coding model',
+  },
+  {
+    id: 'GLM-5-Turbo',
+    label: 'GLM-5 Turbo',
+    description: 'ZCode coding model',
+  },
+];
+
 /**
  * Available models (backward compatibility)
  */
@@ -653,6 +674,7 @@ export const AVAILABLE_PROVIDERS: ProviderInfo[] = [
   { id: 'omp', label: 'OMP CLI', icon: 'codicon-terminal', enabled: true, beta: true },
   { id: 'dsh', label: 'DeepSeek Harness', icon: 'codicon-terminal', enabled: true, beta: true },
   { id: 'minimax', label: 'MiniMax Code', icon: 'codicon-terminal', enabled: true, beta: true },
+  { id: 'zcode', label: 'ZCode', icon: 'codicon-terminal', enabled: true, beta: true },
 ];
 
 /**

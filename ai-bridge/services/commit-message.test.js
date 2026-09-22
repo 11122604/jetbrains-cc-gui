@@ -34,11 +34,11 @@ test('resolveClaudeCommitPath picks agent path when no key is configured at all'
 test('buildCommitAskRequest disables thinking so reasoning models still emit text', () => {
   const request = buildCommitAskRequest('deepseek-reasoner', 'write a commit message');
   // Reasoning models default to thinking and can spend the whole max_tokens
-  // budget on `thinking` blocks, so stream.on('text') never fires and the
-  // finalMessage fallback finds no text block — the commit message comes out
-  // empty. thinking must stay disabled on this path.
+  // budget on `thinking` blocks, so no text_delta is ever emitted and the commit
+  // message comes out empty. thinking must stay disabled on this path, and the
+  // ceiling has to leave room for relays that ignore the flag.
   assert.deepEqual(request.thinking, { type: 'disabled' });
   assert.equal(request.model, 'deepseek-reasoner');
-  assert.equal(request.max_tokens, 1024);
+  assert.equal(request.max_tokens, 2048);
   assert.deepEqual(request.messages, [{ role: 'user', content: 'write a commit message' }]);
 });

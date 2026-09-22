@@ -3,7 +3,7 @@
  * Detection only — the plugin never auto-installs these binaries.
  */
 
-export type CliToolId = 'grok' | 'kimi' | 'opencode' | 'pi' | 'dsh' | 'omp' | 'minimax';
+export type CliToolId = 'grok' | 'kimi' | 'opencode' | 'pi' | 'dsh' | 'omp' | 'minimax' | 'zcode';
 
 export interface CliToolStatus {
   id: CliToolId;
@@ -104,5 +104,16 @@ export const CLI_TOOL_DEFINITIONS: CliToolDefinition[] = [
     docsUrl: 'https://www.npmmirror.com/package/@minimax-ai/code',
     installCommand: 'npm install -g @minimax-ai/code',
     installCommandWindows: 'npm install -g @minimax-ai/code',
+  },
+  {
+    id: 'zcode',
+    nameKey: 'settings.cli.tools.zcode.name',
+    descriptionKey: 'settings.cli.tools.zcode.description',
+    binaryName: 'zcode',
+    docsUrl: 'https://zcode.z.ai/cn',
+    // Desktop app, not a shell-installable CLI — install is downloading the
+    // app from the site, so the "command" slot carries the download page.
+    installCommand: 'https://zcode.z.ai/cn',
+    installCommandWindows: 'https://zcode.z.ai/cn',
   },
 ];

@@ -124,6 +124,10 @@ public final class CliStatusDetector {
 
     public static CliToolStatus detect(CliToolId tool) {
         try {
+            if (tool == CliToolId.ZCODE) {
+                // No PATH binary: resolve the app-server entry inside the desktop app bundle.
+                return detectZcodeAppBundle(tool);
+            }
             for (String candidate : candidatesFor(tool)) {
                 ProbeResult probe = probe(candidate);
                 if (probe.ok) {
@@ -345,7 +349,54 @@ public final class CliStatusDetector {
             case OMP -> new String[]{"OMP_BIN", "OMP_PATH", "OMP_CLI_PATH"};
             case DSH -> new String[]{"DSH_BIN", "DSH_PATH", "DSH_CLI_PATH"};
             case MINIMAX -> new String[]{"MINIMAX_BIN", "MINIMAX_PATH", "MINIMAX_CLI_PATH", "MCODE_BIN"};
+            case ZCODE -> new String[]{"ZCODE_CLI_PATH", "ZCODE_PATH"};
         };
+    }
+    /**
+     * ZCode ships no PATH binary: the app-server entry ({@code zcode.cjs}) is bundled
+     * inside the desktop client, so detection means locating that file at the
+     * well-known install locations (env override first). The resolved file path
+     * plays the role of the "binary" in the status payload.
+     */
+    private static CliToolStatus detectZcodeAppBundle(CliToolId tool) {
+        for (String candidate : zcodeAppBundleCandidates()) {
+            File file = new File(candidate);
+            if (file.isFile()) {
+                return CliToolStatus.installed(tool, "unknown", file.getAbsolutePath());
+            }
+        }
+        return CliToolStatus.notInstalled(tool);
+    }
+
+    private static List<String> zcodeAppBundleCandidates() {
+        List<String> candidates = new ArrayList<>();
+        // 1. Explicit env overrides (point directly at zcode.cjs)
+        for (String envKey : envKeysFor(CliToolId.ZCODE)) {
+            String value = firstNonBlank(System.getenv(envKey));
+            if (value != null) {
+                candidates.add(value.trim());
+            }
+        }
+        // 2. Desktop app bundle locations (mirrors ai-bridge zcode-config.js)
+        if (PlatformUtils.isWindows()) {
+            String localAppData = System.getenv("LOCALAPPDATA");
+            if (localAppData != null && !localAppData.isBlank()) {
+                candidates.add(join(localAppData, "Programs", "ZCode", "resources", "glm", "zcode.cjs"));
+            }
+            String programFiles = System.getenv("ProgramFiles");
+            if (programFiles != null && !programFiles.isBlank()) {
+                candidates.add(join(programFiles, "ZCode", "resources", "glm", "zcode.cjs"));
+            }
+            String programFilesX86 = System.getenv("ProgramFiles(x86)");
+            if (programFilesX86 != null && !programFilesX86.isBlank()) {
+                candidates.add(join(programFilesX86, "ZCode", "resources", "glm", "zcode.cjs"));
+            }
+        } else if (PlatformUtils.isMac()) {
+            candidates.add("/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs");
+        } else {
+            candidates.add("/opt/ZCode/app/resources/glm/zcode.cjs");
+        }
+        return candidates;
     }
 
     private static ProbeResult probe(String candidate) {

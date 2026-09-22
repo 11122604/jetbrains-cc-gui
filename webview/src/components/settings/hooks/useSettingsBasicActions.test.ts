@@ -20,6 +20,7 @@ describe('useSettingsBasicActions', () => {
       pi: false,
       omp: false,
       minimax: false,
+      zcode: false,
     },
   };
 
@@ -120,6 +121,7 @@ describe('useSettingsBasicActions', () => {
           pi: false,
           omp: false,
           minimax: false,
+          zcode: false,
         },
       });
     });
@@ -151,6 +153,7 @@ describe('useSettingsBasicActions', () => {
           pi: false,
           omp: false,
           minimax: false,
+          zcode: false,
         },
       });
     });
@@ -185,6 +188,7 @@ describe('useSettingsBasicActions', () => {
           pi: false,
           omp: false,
           minimax: false,
+          zcode: false,
         },
       });
     });
@@ -217,6 +221,7 @@ describe('useSettingsBasicActions', () => {
           pi: false,
           omp: false,
           minimax: false,
+          zcode: false,
         },
       });
     });

@@ -39,6 +39,7 @@ describe('CommitSection', () => {
         pi: false,
         omp: false,
         minimax: false,
+        zcode: false,
       },
     };
 

@@ -79,6 +79,10 @@ public class ModelProviderHandler {
         MODEL_CONTEXT_LIMITS.put("grok-4.5", 500_000); // legacy alias
         MODEL_CONTEXT_LIMITS.put("grok-4", 500_000);
         MODEL_CONTEXT_LIMITS.put("grok-build", 500_000);
+        // ZCode models (GLM)
+        MODEL_CONTEXT_LIMITS.put("GLM-5.3", 1_000_000);
+        MODEL_CONTEXT_LIMITS.put("GLM-5.3-Flash", 1_000_000);
+        MODEL_CONTEXT_LIMITS.put("GLM-5-Turbo", 200_000);
     }
 
     private final HandlerContext context;

@@ -11,6 +11,7 @@ import {
   OMP_ROLE_MODELS,
   OPENCODE_MODELS,
   PI_MODELS,
+  ZCODE_MODELS,
 } from '../../components/ChatInputBox/types';
 import { isCliOnlyProvider } from './cliProviders';
 import { subscribeActiveCodexProvider } from '../../utils/runtimeProviderCapabilities';
@@ -62,6 +63,7 @@ function fallbackModels(providerId: string): ModelInfo[] {
   if (providerId === 'grok') return GROK_MODELS;
   if (providerId === 'kimi') return KIMI_MODELS;
   if (providerId === 'minimax') return MINIMAX_MODELS;
+  if (providerId === 'zcode') return ZCODE_MODELS;
   if (providerId === 'opencode') return OPENCODE_MODELS;
   if (providerId === 'pi') return PI_MODELS;
   if (providerId === 'omp') return OMP_MODELS;

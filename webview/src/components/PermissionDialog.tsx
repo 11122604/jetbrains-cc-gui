@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatCountdown } from '../utils/helpers';
 import { useDialogCountdownTimeout } from '../hooks/useDialogCountdownTimeout';
@@ -6,12 +6,15 @@ import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from '../utils/permissionDi
 import MarkdownBlock from './MarkdownBlock';
 import { useDialogResize } from '../hooks/useDialogResize';
 import { isEditableEventTarget } from '../utils/isEditableEventTarget';
+import { clearDialogDraft, readDialogDraft, writeDialogDraft } from '../utils/dialogStateStorage';
 
 export interface PermissionRequest {
   channelId: string;
   toolName: string;
   inputs: Record<string, unknown>;
   suggestions?: unknown;
+  deadlineMs?: number;
+  dialogToken?: string;
 }
 
 interface PermissionDialogProps {
@@ -21,6 +24,13 @@ interface PermissionDialogProps {
   onSkip: (channelId: string) => void;
   onApproveAlways: (channelId: string) => void;
   timeoutSeconds?: number;
+}
+
+interface PermissionDialogDraft {
+  deadlineMs?: number;
+  dialogToken?: string;
+  showCommand?: boolean;
+  selectedIndex?: number;
 }
 
 // Format a single tool-input value for display. Pure helper hoisted to module
@@ -35,8 +45,10 @@ const formatInputValue = (value: unknown): string => {
   }
   if (Array.isArray(value)) {
     return value
-      .map((item) => formatInputValue(item))
-      .filter(Boolean)
+      .flatMap((item) => {
+        const text = formatInputValue(item);
+        return text ? [text] : [];
+      })
       .join('\n');
   }
   if (typeof value === 'object') {
@@ -65,10 +77,13 @@ const getCommandContent = (inputs: Record<string, unknown>): string => {
     return formatInputValue(inputs.text);
   }
   // For other tools, format all inputs (skip internal policy fields)
-  return Object.entries(inputs)
-    .filter(([key]) => !key.startsWith('_'))
-    .map(([key, value]) => `${key}: ${formatInputValue(value)}`)
-    .join('\n');
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(inputs)) {
+    if (!key.startsWith('_')) {
+      lines.push(`${key}: ${formatInputValue(value)}`);
+    }
+  }
+  return lines.join('\n');
 };
 
 // Derive the working-directory / path label from the tool inputs.
@@ -95,51 +110,79 @@ const PermissionDialog = ({
 }: PermissionDialogProps) => {
   const [showCommand, setShowCommand] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [hydratedRequestKey, setHydratedRequestKey] = useState<string | null>(null);
   const { t } = useTranslation();
   const { dialogRef, dialogHeight, setDialogHeight, handleResizeStart } = useDialogResize({ minHeight: 150 });
 
   const handleTimeout = useCallback(() => {
     if (request) {
+      clearDialogDraft('permission', request.channelId, request.dialogToken);
       onSkip(request.channelId);
     }
   }, [request, onSkip]);
 
   const { remainingSeconds, isTimeWarning, markSubmitted } = useDialogCountdownTimeout({
     isOpen,
-    requestKey: request?.channelId,
+    requestKey: request?.dialogToken ?? request?.channelId,
     timeoutSeconds,
+    deadlineMs: request?.deadlineMs,
     onTimeout: handleTimeout,
   });
 
   const handleApprove = useCallback(() => {
     if (!request || !markSubmitted()) return;
+    clearDialogDraft('permission', request.channelId, request.dialogToken);
     onApprove(request.channelId);
   }, [request, markSubmitted, onApprove]);
 
   const handleApproveAlways = useCallback(() => {
     if (!request || !markSubmitted()) return;
+    clearDialogDraft('permission', request.channelId, request.dialogToken);
     onApproveAlways(request.channelId);
   }, [request, markSubmitted, onApproveAlways]);
 
   const handleSkip = useCallback(() => {
     if (!request || !markSubmitted()) return;
+    clearDialogDraft('permission', request.channelId, request.dialogToken);
     onSkip(request.channelId);
   }, [request, markSubmitted, onSkip]);
 
   useEffect(() => {
-    if (isOpen && request) {
-      setShowCommand(true);
-      setSelectedIndex(0);
-      setDialogHeight(null);
-    }
-  }, [isOpen, request?.channelId, setDialogHeight]);
-
-  useEffect(() => {
     if (!isOpen || !request) {
+      setHydratedRequestKey(null);
       return;
     }
+    const draft = readDialogDraft<PermissionDialogDraft>('permission', request.channelId, request.deadlineMs, request.dialogToken);
+    const restoredIndex = draft?.selectedIndex;
+    setShowCommand(draft?.showCommand !== false);
+    setSelectedIndex(
+      typeof restoredIndex === 'number' && Number.isInteger(restoredIndex)
+        ? Math.max(0, Math.min(2, restoredIndex))
+        : 0,
+    );
+    setDialogHeight(null);
+    setHydratedRequestKey(request.dialogToken ?? request.channelId);
+  }, [isOpen, request?.channelId, request?.dialogToken, request?.deadlineMs, setDialogHeight]);
 
-    const handleKeyDown = (e: KeyboardEvent) => {
+  useEffect(() => {
+    const channelId = request?.channelId;
+    const deadlineMs = request?.deadlineMs;
+    if (!isOpen || channelId === undefined || hydratedRequestKey !== (request?.dialogToken ?? channelId)) {
+      return;
+    }
+    writeDialogDraft('permission', channelId, {
+      deadlineMs,
+      dialogToken: request?.dialogToken,
+      showCommand,
+      selectedIndex,
+    });
+  }, [hydratedRequestKey, isOpen, request?.channelId, request?.dialogToken, request?.deadlineMs, selectedIndex, showCommand]);
+
+  // Latest-handler ref: the keydown subscription stays stable across
+  // selectedIndex/callback changes instead of re-subscribing every render.
+  const keydownHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    keydownHandlerRef.current = (e: KeyboardEvent) => {
       if (isEditableEventTarget(e.target)) {
         return;
       }
@@ -158,18 +201,22 @@ const PermissionDialog = ({
         setSelectedIndex(prev => Math.min(2, prev + 1));
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        setSelectedIndex(current => {
-          if (current === 0) handleApprove();
-          else if (current === 1) handleApproveAlways();
-          else if (current === 2) handleSkip();
-          return current;
-        });
+        if (selectedIndex === 0) handleApprove();
+        else if (selectedIndex === 1) handleApproveAlways();
+        else if (selectedIndex === 2) handleSkip();
       }
     };
+  });
 
+  useEffect(() => {
+    if (!isOpen || !request) {
+      return;
+    }
+
+    const handleKeyDown = (e: KeyboardEvent) => keydownHandlerRef.current(e);
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, request, handleApprove, handleApproveAlways, handleSkip]);
+  }, [isOpen, request]);
 
   // Derived display values are memoized so the per-second countdown re-render
   // does not re-run command formatting (which may JSON.stringify inputs).

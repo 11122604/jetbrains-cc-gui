@@ -6,6 +6,7 @@ import com.github.claudecodegui.provider.claude.ClaudeSDKBridge;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.grok.GrokSDKBridge;
 import com.github.claudecodegui.provider.common.MarkerCliBridge;
+import com.github.claudecodegui.provider.zcode.ZcodeSDKBridge;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
@@ -50,6 +51,7 @@ public class ClaudeSession {
     private final com.github.claudecodegui.session.EditorContextCollector contextCollector;
     private final SessionContextService contextService;
     private final GrokSDKBridge grokSDKBridge;
+    private final ZcodeSDKBridge zcodeSDKBridge;
     private final SessionProviderRouter providerRouter;
     private final SessionSendService sendService;
     private final SessionMessageOrchestrator messageOrchestrator;
@@ -131,8 +133,8 @@ public class ClaudeSession {
         /**
          * Called when a block reset signal is received during streaming.
          * This indicates a new assistant message has started within the stream
-         * (e.g., after a tool_use loop iteration), and the frontend should
-         * clear its streaming content refs to prevent cross-turn content merging.
+         * (e.g., after a tool_use loop iteration), so the frontend can record
+         * the boundary while retaining cumulative streaming content for reconciliation.
          */
         default void onBlockReset() {
         }
@@ -175,6 +177,17 @@ public class ClaudeSession {
             Map<String, MarkerCliBridge> cliBridges,
             GrokSDKBridge grokSDKBridge
     ) {
+        this(project, claudeSDKBridge, codexSDKBridge, cliBridges, grokSDKBridge, null);
+    }
+
+    public ClaudeSession(
+            Project project,
+            ClaudeSDKBridge claudeSDKBridge,
+            CodexSDKBridge codexSDKBridge,
+            Map<String, MarkerCliBridge> cliBridges,
+            GrokSDKBridge grokSDKBridge,
+            ZcodeSDKBridge zcodeSDKBridge
+    ) {
         this.project = project;
         this.claudeSDKBridge = claudeSDKBridge;
         this.codexSDKBridge = codexSDKBridge;
@@ -187,7 +200,9 @@ public class ClaudeSession {
         this.callbackFacade = new SessionCallbackFacade(project);
         this.contextService = new SessionContextService(project);
         this.grokSDKBridge = grokSDKBridge;
-        this.providerRouter = new SessionProviderRouter(claudeSDKBridge, codexSDKBridge, cliBridges, this.grokSDKBridge);
+        this.zcodeSDKBridge = zcodeSDKBridge;
+        this.providerRouter = new SessionProviderRouter(
+                claudeSDKBridge, codexSDKBridge, cliBridges, this.grokSDKBridge, this.zcodeSDKBridge);
         this.sendService = new SessionSendService(
                 project,
                 state,
@@ -199,7 +214,8 @@ public class ClaudeSession {
                 codexSDKBridge,
                 cliBridges,
                 contextService,
-                this.grokSDKBridge);
+                this.grokSDKBridge,
+                this.zcodeSDKBridge);
         this.messageOrchestrator = new SessionMessageOrchestrator(
                 project,
                 state,

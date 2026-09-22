@@ -666,30 +666,37 @@ if (typeof window !== 'undefined' && !window.applyBackendTabState) {
   };
 }
 
+// Show and close share a FIFO so bootstrap replay preserves the original request order.
 if (typeof window !== 'undefined' && !window.showPermissionDialog) {
-  debugLog('[Main] Pre-registering showPermissionDialog placeholder');
-  window.showPermissionDialog = (json: string) => {
-    const pending = window.__pendingPermissionDialogRequests || [];
-    pending.push(json);
-    window.__pendingPermissionDialogRequests = pending;
+  window.showPermissionDialog = (payload) => {
+    (window.__pendingDialogEvents ??= []).push({ kind: 'permission', type: 'show', payload });
+  };
+}
+if (typeof window !== 'undefined' && !window.forceClosePermissionDialog) {
+  window.forceClosePermissionDialog = (targetId, dialogToken) => {
+    (window.__pendingDialogEvents ??= []).push({ kind: 'permission', type: 'close', targetId: targetId ?? null, dialogToken });
   };
 }
 
 if (typeof window !== 'undefined' && !window.showAskUserQuestionDialog) {
-  debugLog('[Main] Pre-registering showAskUserQuestionDialog placeholder');
-  window.showAskUserQuestionDialog = (json: string) => {
-    const pending = window.__pendingAskUserQuestionDialogRequests || [];
-    pending.push(json);
-    window.__pendingAskUserQuestionDialogRequests = pending;
+  window.showAskUserQuestionDialog = (payload) => {
+    (window.__pendingDialogEvents ??= []).push({ kind: 'askUserQuestion', type: 'show', payload });
+  };
+}
+if (typeof window !== 'undefined' && !window.forceCloseAskUserQuestionDialog) {
+  window.forceCloseAskUserQuestionDialog = (targetId, dialogToken) => {
+    (window.__pendingDialogEvents ??= []).push({ kind: 'askUserQuestion', type: 'close', targetId: targetId ?? null, dialogToken });
   };
 }
 
 if (typeof window !== 'undefined' && !window.showPlanApprovalDialog) {
-  debugLog('[Main] Pre-registering showPlanApprovalDialog placeholder');
-  window.showPlanApprovalDialog = (json: string) => {
-    const pending = window.__pendingPlanApprovalDialogRequests || [];
-    pending.push(json);
-    window.__pendingPlanApprovalDialogRequests = pending;
+  window.showPlanApprovalDialog = (payload) => {
+    (window.__pendingDialogEvents ??= []).push({ kind: 'planApproval', type: 'show', payload });
+  };
+}
+if (typeof window !== 'undefined' && !window.forceClosePlanApprovalDialog) {
+  window.forceClosePlanApprovalDialog = (targetId, dialogToken) => {
+    (window.__pendingDialogEvents ??= []).push({ kind: 'planApproval', type: 'close', targetId: targetId ?? null, dialogToken });
   };
 }
 

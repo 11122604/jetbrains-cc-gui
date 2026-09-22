@@ -15,6 +15,7 @@ import com.github.claudecodegui.provider.minimax.MiniMaxHistoryReader;
 import com.github.claudecodegui.provider.opencode.OpenCodeHistoryReader;
 import com.github.claudecodegui.provider.pi.PiHistoryReader;
 import com.github.claudecodegui.provider.omp.OmpHistoryReader;
+import com.github.claudecodegui.provider.zcode.ZcodeHistoryReader;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -105,6 +106,11 @@ class HistoryLoadService {
                     MiniMaxHistoryReader miniMaxReader = new MiniMaxHistoryReader();
                     historyJson = miniMaxReader.getSessionsForProjectAsJson(projectPath);
                     LOG.info("[HistoryHandler] MiniMaxHistoryReader 返回的 JSON 长度: " + historyJson.length());
+                } else if ("zcode".equals(provider)) {
+                    LOG.info("[HistoryHandler] 使用 ZcodeHistoryReader 读取 ZCode 会话 (项目: " + projectPath + ")");
+                    ZcodeHistoryReader zcodeReader = new ZcodeHistoryReader();
+                    historyJson = zcodeReader.getSessionsForProjectAsJson(projectPath);
+                    LOG.info("[HistoryHandler] ZcodeHistoryReader 返回的 JSON 长度: " + historyJson.length());
                 } else {
                     // Default: use ClaudeHistoryReader to read Claude sessions
                     LOG.info("[HistoryHandler] 使用 ClaudeHistoryReader 读取 Claude 会话");
@@ -188,6 +194,9 @@ class HistoryLoadService {
             } else if ("pi".equals(provider) || "omp".equals(provider) || "opencode".equals(provider) || "kimi".equals(provider) || "minimax".equals(provider)) {
                 // Disk readers scan live filesystem; no dedicated index cache.
                 LOG.info("[HistoryHandler] " + provider + " deep search: reloading from disk");
+            } else if ("zcode".equals(provider)) {
+                // ZCode history is a live app-server query; no index cache to clear.
+                LOG.info("[HistoryHandler] ZCode deep search: reloading via app-server query");
             } else if (projectPath != null) {
                 SessionIndexCache.getInstance().clearProject(projectPath);
                 SessionIndexManager.getInstance().clearProjectIndex("claude", projectPath);

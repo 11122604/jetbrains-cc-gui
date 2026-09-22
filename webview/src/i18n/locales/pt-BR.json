@@ -238,7 +238,8 @@
           "opencode": "OpenCode",
           "pi": "PI CLI",
           "omp": "OMP CLI",
-          "minimax": "MiniMax Code"
+          "minimax": "MiniMax Code",
+          "zcode": "ZCode"
         },
         "currentProviderAuto": "Currently using automatic selection: {{provider}}",
         "currentProviderManual": "Currently using manually selected provider: {{provider}}",
@@ -1001,6 +1002,10 @@
           "name": "MiniMax Code",
           "description": "Agente de código em terminal da MiniMax. Requer Node.js 22.19+ / 24+ (não 23); comandos: minimax / mcode"
         },
+        "zcode": {
+          "name": "ZCode",
+          "description": "Aplicativo de desktop de codificação ZCode da Zhipu com modelos GLM"
+        },
         "grok": {
           "name": "Grok CLI",
           "description": "xAI Grok terminal coding agent"
@@ -1500,7 +1505,32 @@
     "bashGroupAllCompleted": "Todos Concluídos",
     "bashGroupFailed": "falhou",
     "updatePlan": "Atualizar Plano",
-    "applyPatch": "Aplicar Patch"
+    "applyPatch": "Aplicar Patch",
+    "reportFindings": {
+      "title": "Constatações da revisão",
+      "findingsCount_one": "{{count}} constatação",
+      "findingsCount_other": "{{count}} constatações",
+      "confirmedCount_one": "{{count}} confirmada",
+      "confirmedCount_other": "{{count}} confirmadas",
+      "plausibleCount_one": "{{count}} a revisar",
+      "plausibleCount_other": "{{count}} a revisar",
+      "confirmed": "Confirmada",
+      "plausible": "A revisar",
+      "fixed": "Corrigida",
+      "skipped": "Ignorada",
+      "noChangeNeeded": "Nenhuma alteração necessária",
+      "empty": "Nenhuma constatação",
+      "summaryLabel": "Resumo da revisão",
+      "summary": "Resumo",
+      "failureScenario": "Cenário de falha",
+      "reviewLevel": "Nível de revisão: {{level}}",
+      "openFile": "Abrir {{filePath}}",
+      "expandFinding": "Expandir constatação",
+      "collapseFinding": "Recolher constatação",
+      "expandReport": "Expandir constatações",
+      "collapseReport": "Recolher constatações",
+      "untitled": "Constatação sem título"
+    }
   },
   "todo": {
     "inProgress": "Em Andamento {{completed}}/{{total}} tarefas",
@@ -1856,6 +1886,9 @@
     },
     "minimax": {
       "label": "MiniMax Code"
+    },
+    "zcode": {
+      "label": "ZCode"
     },
     "gemini": {
       "label": "Gemini Cli"

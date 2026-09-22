@@ -39,6 +39,7 @@ describe('PromptEnhancerSection', () => {
         pi: false,
         omp: false,
         minimax: false,
+        zcode: false,
       },
     };
 
@@ -84,6 +85,7 @@ describe('PromptEnhancerSection', () => {
             pi: false,
             omp: false,
             minimax: false,
+            zcode: false,
           },
         }}
         onPromptEnhancerProviderChange={vi.fn()}

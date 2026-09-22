@@ -33,7 +33,7 @@ import { getRealHomeDir } from '../utils/path-utils.js';
 import { runAcpTurn } from './grok/grok-acp-client.js';
 import { buildGrokEnv, resolveEffectiveGrokAuth } from './grok/grok-utils.js';
 
-export const CLI_ASK_PROVIDERS = ['grok', 'kimi', 'opencode', 'pi', 'omp', 'minimax'];
+export const CLI_ASK_PROVIDERS = ['grok', 'kimi', 'opencode', 'pi', 'omp', 'minimax', 'zcode'];
 
 const DEFAULT_MODELS = {
   grok: 'grok',
@@ -42,6 +42,7 @@ const DEFAULT_MODELS = {
   pi: 'auto',
   omp: 'auto',
   minimax: 'auto',
+  zcode: 'auto',
 };
 
 function isDefaultModelToken(model) {
@@ -525,6 +526,92 @@ async function askMiniMax(prompt, { model, cwd, onDelta } = {}) {
 }
 
 /**
+ * ZCode: session-less generation through the app-server's workspace-level
+ * text API (lighter than booting a full chat session; no tools involved).
+ */
+async function askZcode(prompt, { model, cwd } = {}) {
+  const { ZcodeAppServerClient } = await import('./zcode/zcode-appserver-client.js');
+  const {
+    resolveZcodeCliPath,
+    buildZcodeEnv,
+    resolveActiveProvider,
+  } = await import('./zcode/zcode-config.js');
+
+  const cliPath = resolveZcodeCliPath();
+  if (!cliPath) {
+    throw new Error('ZCode CLI not found. Install the ZCode desktop client, or set ZCODE_CLI_PATH.');
+  }
+  const workCwd = (cwd && String(cwd).trim()) || process.cwd();
+  const active = resolveActiveProvider();
+  if (!active) {
+    throw new Error('No active ZCode provider in ~/.zcode/v2/config.json (open the ZCode client once).');
+  }
+  const modelId = isDefaultModelToken(model) ? Object.keys(active.models || {})[0] : model;
+  if (!modelId) {
+    throw new Error('ZCode provider exposes no models.');
+  }
+
+  const client = new ZcodeAppServerClient({
+    nodePath: process.execPath,
+    cliPath,
+    cwd: workCwd,
+    env: buildZcodeEnv(),
+    onReverseRequest: async (method) => {
+      if (method === 'session/requestRuntimePreferences') {
+        return {
+          nativeSearchEnhancementsEnabled: false,
+          memoryEnabled: false,
+          askUserQuestionAutoResolutionEnabled: false,
+        };
+      }
+      const err = new Error(`unsupported reverse request: ${method}`);
+      err.code = -32601;
+      throw err;
+    },
+  });
+  client.on('stderrLine', () => {}); // drained; generation errors surface via RPC
+
+  try {
+    client.start();
+    const workspace = { workspacePath: workCwd, workspaceKey: workCwd };
+    const modelRef = { providerId: active.providerId, modelId };
+    const params = {
+      workspace,
+      modelRef,
+      prompt: String(prompt),
+      querySource: 'cc-gui-ask',
+    };
+    // The app-server only knows env-injected providers; register the client
+    // channel up front (idempotent) so generateText's modelRef resolves.
+    // provider.source is a closed enum: builtin|models-dev|custom|user|…
+    await client.request('workspace/upsertModelProvider', {
+      workspace,
+      provider: {
+        providerId: active.providerId,
+        kind: 'anthropic',
+        label: active.name || active.providerId,
+        source: active.providerId.startsWith('builtin:') ? 'builtin' : 'custom',
+        baseURL: active.baseURL,
+        ...(active.apiKey ? { apiKey: { source: 'inline', value: active.apiKey } } : {}),
+        models: Object.entries(active.models || {}).map(([id, def]) => ({
+          modelId: id,
+          label: def?.name || id,
+          contextWindow: def?.limit?.context ?? undefined,
+          maxOutputTokens: def?.limit?.output ?? undefined,
+          supportsImages: Array.isArray(def?.modalities?.input)
+            ? def.modalities.input.includes('image')
+            : undefined,
+        })),
+      },
+    });
+    const result = await client.request('workspace/generateText', params, 120_000);
+    return typeof result?.text === 'string' ? result.text.trim() : '';
+  } finally {
+    client.close();
+  }
+}
+
+/**
  * One-shot text generation for a CLI provider.
  *
  * @param {object} options
@@ -565,6 +652,8 @@ export async function askCliProvider({
       return askOmp(prompt, opts);
     case 'minimax':
       return askMiniMax(prompt, opts);
+    case 'zcode':
+      return askZcode(prompt, opts);
     default:
       throw new Error(`Unsupported CLI ask provider: ${provider}`);
   }

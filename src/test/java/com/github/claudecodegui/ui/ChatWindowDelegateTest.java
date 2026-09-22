@@ -1,6 +1,8 @@
 package com.github.claudecodegui.ui;
 
+import com.github.claudecodegui.handler.PermissionHandler;
 import com.github.claudecodegui.handler.SettingsHandler;
+import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.session.SessionLifecycleManager;
 import com.github.claudecodegui.session.StreamMessageCoalescer;
@@ -123,6 +125,19 @@ public class ChatWindowDelegateTest {
                         (proxy, method, args) -> defaultValue(method.getReturnType())
                 );
         StreamMessageCoalescer coalescer = new StreamMessageCoalescer(coalescerTarget);
+        // handleFrontendReady replays pending dialogs through the host's permission
+        // handler, so the double needs a real (empty) one rather than a null.
+        PermissionHandler permissionHandler = new PermissionHandler(new HandlerContext(
+                null,
+                null,
+                null,
+                null,
+                (HandlerContext.JsCallback) Proxy.newProxyInstance(
+                        HandlerContext.JsCallback.class.getClassLoader(),
+                        new Class<?>[]{HandlerContext.JsCallback.class},
+                        (proxy, method, args) -> defaultValue(method.getReturnType())
+                )
+        ));
 
         ChatWindowDelegate.DelegateHost host =
                 (ChatWindowDelegate.DelegateHost) Proxy.newProxyInstance(
@@ -138,6 +153,8 @@ public class ChatWindowDelegateTest {
                                     return lifecycleManager;
                                 case "getStreamCoalescer":
                                     return coalescer;
+                                case "getPermissionHandler":
+                                    return permissionHandler;
                                 case "isRuntimeRecoveryPage":
                                     return runtimeRecovery;
                                 case "callJavaScript":

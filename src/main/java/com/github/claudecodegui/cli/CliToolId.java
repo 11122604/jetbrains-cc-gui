@@ -11,7 +11,11 @@ public enum CliToolId {
     OMP("omp", "OMP CLI", "omp", null),
     DSH("dsh", "DeepSeek Harness", "dsh", null),
     // Official installer exposes `minimax`; npm global installs expose `mcode`.
-    MINIMAX("minimax", "MiniMax Code", "minimax", "mcode");
+    MINIMAX("minimax", "MiniMax Code", "minimax", "mcode"),
+    // ZCode has no PATH binary — the app-server entry (zcode.cjs) lives inside
+    // the desktop app bundle; CliStatusDetector resolves it from well-known
+    // install locations (the binary name is only a display/fallback label).
+    ZCODE("zcode", "ZCode", "zcode", null);
 
     private final String id;
     private final String displayName;

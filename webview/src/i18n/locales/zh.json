@@ -483,7 +483,8 @@
           "opencode": "OpenCode",
           "pi": "PI CLI",
           "omp": "OMP CLI",
-          "minimax": "MiniMax Code"
+          "minimax": "MiniMax Code",
+          "zcode": "ZCode"
         },
         "currentProviderAuto": "当前使用自动选择：{{provider}}",
         "currentProviderManual": "当前使用手动选择的 provider：{{provider}}",
@@ -642,6 +643,10 @@
         "minimax": {
           "name": "MiniMax Code",
           "description": "MiniMax 终端编码智能体。需 Node.js 22.19+ / 24+（不支持 23）；命令：minimax / mcode"
+        },
+        "zcode": {
+          "name": "ZCode",
+          "description": "智谱 ZCode 桌面编码应用（GLM 模型）"
         },
         "grok": {
           "name": "Grok CLI",
@@ -1802,7 +1807,32 @@
     "bashGroupAllCompleted": "全部完成",
     "bashGroupFailed": "失败",
     "updatePlan": "更新计划",
-    "applyPatch": "应用补丁"
+    "applyPatch": "应用补丁",
+    "reportFindings": {
+      "title": "审查发现",
+      "findingsCount_one": "{{count}} 条发现",
+      "findingsCount_other": "{{count}} 条发现",
+      "confirmedCount_one": "{{count}} 条已确认",
+      "confirmedCount_other": "{{count}} 条已确认",
+      "plausibleCount_one": "{{count}} 条待复核",
+      "plausibleCount_other": "{{count}} 条待复核",
+      "confirmed": "已确认",
+      "plausible": "待复核",
+      "fixed": "已修复",
+      "skipped": "已跳过",
+      "noChangeNeeded": "无需修改",
+      "empty": "未发现问题",
+      "summaryLabel": "审查摘要",
+      "summary": "问题摘要",
+      "failureScenario": "触发场景",
+      "reviewLevel": "审查级别：{{level}}",
+      "openFile": "打开 {{filePath}}",
+      "expandFinding": "展开问题详情",
+      "collapseFinding": "收起问题详情",
+      "expandReport": "展开审查发现",
+      "collapseReport": "收起审查发现",
+      "untitled": "未命名问题"
+    }
   },
   "todo": {
     "inProgress": "进行中 {{completed}}/{{total}} 个任务",
@@ -2208,6 +2238,9 @@
     },
     "minimax": {
       "label": "MiniMax Code"
+    },
+    "zcode": {
+      "label": "ZCode"
     },
     "gemini": {
       "label": "Gemini Cli"

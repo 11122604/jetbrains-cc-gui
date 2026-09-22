@@ -11,6 +11,7 @@ import com.github.claudecodegui.provider.minimax.MiniMaxHistoryReader;
 import com.github.claudecodegui.provider.opencode.OpenCodeHistoryReader;
 import com.github.claudecodegui.provider.pi.PiHistoryReader;
 import com.github.claudecodegui.provider.omp.OmpHistoryReader;
+import com.github.claudecodegui.provider.zcode.ZcodeHistoryReader;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -148,6 +149,10 @@ class HistoryExportService {
         if ("minimax".equals(provider)) {
             LOG.info("[HistoryHandler] 使用 MiniMaxHistoryReader 导出 MiniMax 会话");
             return toJsonArray(new MiniMaxHistoryReader().getSessionMessages(sessionId, projectPath));
+        }
+        if ("zcode".equals(provider)) {
+            LOG.info("[HistoryHandler] 使用 ZcodeHistoryReader 导出 ZCode 会话");
+            return toJsonArray(new ZcodeHistoryReader().getSessionMessages(sessionId, projectPath));
         }
         if ("pi".equals(provider)) {
             LOG.info("[HistoryHandler] 使用 PiHistoryReader 导出 PI 会话");

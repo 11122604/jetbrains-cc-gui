@@ -238,7 +238,8 @@
           "opencode": "OpenCode",
           "pi": "PI CLI",
           "omp": "OMP CLI",
-          "minimax": "MiniMax Code"
+          "minimax": "MiniMax Code",
+          "zcode": "ZCode"
         },
         "currentProviderAuto": "Currently using automatic selection: {{provider}}",
         "currentProviderManual": "Currently using manually selected provider: {{provider}}",
@@ -866,6 +867,10 @@
           "name": "MiniMax Code",
           "description": "Терминальный кодинг-агент MiniMax. Требуется Node.js 22.19+ / 24+ (не 23); команды: minimax / mcode"
         },
+        "zcode": {
+          "name": "ZCode",
+          "description": "Десктопное кодинг-приложение Zhipu ZCode с моделями GLM"
+        },
         "grok": {
           "name": "Grok CLI",
           "description": "xAI Grok terminal coding agent"
@@ -1376,7 +1381,32 @@
     "bashGroupCompleted": "завершено",
     "bashGroupAllCompleted": "Все завершены",
     "bashGroupFailed": "ошибка",
-    "promptLabel": "Промпт"
+    "promptLabel": "Промпт",
+    "reportFindings": {
+      "title": "Результаты ревью",
+      "findingsCount_one": "{{count}} замечание",
+      "findingsCount_other": "{{count}} замечаний",
+      "confirmedCount_one": "{{count}} подтверждено",
+      "confirmedCount_other": "{{count}} подтверждено",
+      "plausibleCount_one": "{{count}} требует проверки",
+      "plausibleCount_other": "{{count}} требует проверки",
+      "confirmed": "Подтверждено",
+      "plausible": "Требует проверки",
+      "fixed": "Исправлено",
+      "skipped": "Пропущено",
+      "noChangeNeeded": "Изменения не требуются",
+      "empty": "Замечаний нет",
+      "summaryLabel": "Сводка ревью",
+      "summary": "Описание",
+      "failureScenario": "Сценарий сбоя",
+      "reviewLevel": "Уровень ревью: {{level}}",
+      "openFile": "Открыть {{filePath}}",
+      "expandFinding": "Развернуть замечание",
+      "collapseFinding": "Свернуть замечание",
+      "expandReport": "Развернуть результаты ревью",
+      "collapseReport": "Свернуть результаты ревью",
+      "untitled": "Замечание без названия"
+    }
   },
   "todo": {
     "inProgress": "В процессе {{completed}}/{{total}} задач",
@@ -1732,6 +1762,9 @@
     },
     "minimax": {
       "label": "MiniMax Code"
+    },
+    "zcode": {
+      "label": "ZCode"
     },
     "gemini": {
       "label": "Gemini Cli"

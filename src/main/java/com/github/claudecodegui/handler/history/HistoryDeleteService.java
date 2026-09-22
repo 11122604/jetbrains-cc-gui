@@ -249,6 +249,9 @@ class HistoryDeleteService {
         if ("minimax".equals(currentProvider)) {
             return new DeleteResult(deleteMiniMaxSession(sessionId), 0);
         }
+        if ("zcode".equals(currentProvider)) {
+            return new DeleteResult(deleteZcodeSession(sessionId), 0);
+        }
         if ("dsh".equals(currentProvider)) {
             return new DeleteResult(deleteDshSession(sessionId), 0);
         }
@@ -328,6 +331,17 @@ class HistoryDeleteService {
                 new com.github.claudecodegui.provider.minimax.MiniMaxHistoryReader();
         boolean deleted = reader.deleteSession(sessionId, projectPath);
         LOG.info("[HistoryHandler] Delete MiniMax session " + sessionId + ": " + (deleted ? "ok" : "not found"));
+        return deleted;
+    }
+
+    private boolean deleteZcodeSession(String sessionId) throws java.io.IOException {
+        String rawPath = context.resolveEffectiveWorkingDirectory();
+        String nodePath = NodeDetector.getInstance().getCachedNodePath();
+        String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
+        com.github.claudecodegui.provider.zcode.ZcodeHistoryReader reader =
+                new com.github.claudecodegui.provider.zcode.ZcodeHistoryReader();
+        boolean deleted = reader.deleteSession(sessionId, projectPath);
+        LOG.info("[HistoryHandler] Delete ZCode session " + sessionId + ": " + (deleted ? "ok" : "not found"));
         return deleted;
     }
 

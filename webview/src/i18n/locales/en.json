@@ -483,7 +483,8 @@
           "opencode": "OpenCode",
           "pi": "PI CLI",
           "omp": "OMP CLI",
-          "minimax": "MiniMax Code"
+          "minimax": "MiniMax Code",
+          "zcode": "ZCode"
         },
         "currentProviderAuto": "Currently using automatic selection: {{provider}}",
         "currentProviderManual": "Currently using manually selected provider: {{provider}}",
@@ -642,6 +643,10 @@
         "minimax": {
           "name": "MiniMax Code",
           "description": "MiniMax terminal coding agent. Requires Node.js 22.19+ / 24+ (not 23); commands: minimax / mcode"
+        },
+        "zcode": {
+          "name": "ZCode",
+          "description": "Zhipu ZCode desktop coding app with GLM models"
         },
         "grok": {
           "name": "Grok CLI",
@@ -1797,7 +1802,32 @@
     "bashGroupFailed": "failed",
     "promptLabel": "Prompt",
     "updatePlan": "Update Plan",
-    "applyPatch": "Apply Patch"
+    "applyPatch": "Apply Patch",
+    "reportFindings": {
+      "title": "Report Findings",
+      "findingsCount_one": "{{count}} finding",
+      "findingsCount_other": "{{count}} findings",
+      "confirmedCount_one": "{{count}} confirmed",
+      "confirmedCount_other": "{{count}} confirmed",
+      "plausibleCount_one": "{{count}} to review",
+      "plausibleCount_other": "{{count}} to review",
+      "confirmed": "Confirmed",
+      "plausible": "To review",
+      "fixed": "Fixed",
+      "skipped": "Skipped",
+      "noChangeNeeded": "No change needed",
+      "empty": "No findings",
+      "summaryLabel": "Review summary",
+      "summary": "Summary",
+      "failureScenario": "Failure scenario",
+      "reviewLevel": "Review level: {{level}}",
+      "openFile": "Open {{filePath}}",
+      "expandFinding": "Expand finding",
+      "collapseFinding": "Collapse finding",
+      "expandReport": "Expand findings report",
+      "collapseReport": "Collapse findings report",
+      "untitled": "Untitled finding"
+    }
   },
   "todo": {
     "inProgress": "In Progress {{completed}}/{{total}} tasks",
@@ -2202,6 +2232,9 @@
     },
     "minimax": {
       "label": "MiniMax Code"
+    },
+    "zcode": {
+      "label": "ZCode"
     },
     "gemini": {
       "label": "Gemini Cli"

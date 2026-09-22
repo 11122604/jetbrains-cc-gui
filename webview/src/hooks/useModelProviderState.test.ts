@@ -48,4 +48,36 @@ describe('Codex native auto review availability', () => {
     expect(result.current.codexNativeAutoReviewAvailable).toBe(true);
     expect(result.current.codexPermissionMode).toBe('auto');
   });
+
+  it('keeps a saved auto mode when switching to codex with a supported SDK', () => {
+    localStorage.setItem('model-selection-state', JSON.stringify({
+      provider: 'claude', codexPermissionMode: 'auto',
+    }));
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.setSdkStatus({ 'codex-sdk': { installed: true, meetsMinimumVersion: true } }));
+    act(() => result.current.handleProviderSelect('codex'));
+    expect(result.current.permissionMode).toBe('auto');
+    expect(sendBridgeEvent).toHaveBeenCalledWith('set_mode', 'auto');
+  });
+
+  it('keeps a saved auto mode when switching to codex while SDK support is unknown', () => {
+    localStorage.setItem('model-selection-state', JSON.stringify({
+      provider: 'claude', codexPermissionMode: 'auto',
+    }));
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.handleProviderSelect('codex'));
+    expect(result.current.permissionMode).toBe('auto');
+    expect(sendBridgeEvent).toHaveBeenCalledWith('set_mode', 'auto');
+  });
+
+  it('demotes a saved auto mode when switching to codex with an outdated SDK', () => {
+    localStorage.setItem('model-selection-state', JSON.stringify({
+      provider: 'claude', codexPermissionMode: 'auto',
+    }));
+    const { result } = renderHook(() => useModelProviderState(options));
+    act(() => result.current.setSdkStatus({ 'codex-sdk': { installed: true, meetsMinimumVersion: false } }));
+    act(() => result.current.handleProviderSelect('codex'));
+    expect(result.current.permissionMode).toBe('default');
+    expect(sendBridgeEvent).toHaveBeenCalledWith('set_mode', 'default');
+  });
 });

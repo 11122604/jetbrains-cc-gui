@@ -23,13 +23,19 @@ import {
 import {
   bridgeDshApproval,
   bridgeDshQuestion,
+  bridgeModernApproval,
+  bridgeModernQuestion,
   DshGoalSettlement,
   DshMuxConnection,
   peekMuxSessionId,
+  projectFollowFrame,
   projectMuxFrame,
+  projectRemoteEventFrame,
 } from './events.js';
+import { DshRemoteMux } from './stream-client.js';
 import { ensureHost, runtimeSettingsFromEnv } from './supervisor.js';
 import * as dshSession from './session.js';
+import { MODERN_DIALECT } from './wire.js';
 
 function logDebug(...args) {
   console.error('[DEBUG][DSH]', ...args);
@@ -77,10 +83,14 @@ async function ensureSession(settings, workCwd, incomingSessionId) {
   logDebug(`host ${hostHandle.origin} (${hostHandle.ownership})`);
 
   // Workspace binding — never let the session fall into the host cwd.
-  let workspaceId;
+  // Modern hosts bind the directory on the session itself, so no workspace is
+  // created there (and none of the user's workspace entries are touched).
+  let workspaceId = '';
   try {
     const workspace = await dshSession.createWorkspace(client, workCwd);
-    workspaceId = dshSession.workspaceIdFromCreate(workspace);
+    if (workspace) {
+      workspaceId = dshSession.workspaceIdFromCreate(workspace);
+    }
   } catch (error) {
     emitSendError(`dsh workspace.create failed: ${error.message}`, 'DSH');
     return null;
@@ -90,7 +100,7 @@ async function ensureSession(settings, workCwd, incomingSessionId) {
   let sessionId = dshSession.sessionIdFromThread(incomingSessionId);
   if (!sessionId) {
     try {
-      sessionId = await dshSession.createSession(client, workspaceId);
+      sessionId = await dshSession.createSession(client, workspaceId, undefined, workCwd);
     } catch (error) {
       emitSendError(`dsh session.create failed: ${error.message}`, 'DSH');
       return null;
@@ -154,6 +164,12 @@ function createTurnState() {
     sawTurnStart: false,
     lastActivityAt: Date.now(),
     pendingBridges: new Set(),
+    /** Modern hosts route waterfall answers by this per-generation id. */
+    clientId: null,
+    /** $events waterfalls the host withdrew before they were answered. */
+    withdrawnWaterfalls: new Set(),
+    /** eventId → tracked bridge promise, so a cancel can release the drain. */
+    waterfallBridges: new Map(),
   };
 }
 
@@ -193,6 +209,7 @@ function trackBridge(turn, bridge, label) {
   const tracked = bridge.catch((error) => logDebug(`${label} bridge failed: ${error.message}`));
   turn.pendingBridges.add(tracked);
   tracked.finally(() => turn.pendingBridges.delete(tracked));
+  return tracked;
 }
 
 function handleTurnEvent(client, sessionId, turn, event) {
@@ -325,6 +342,140 @@ function settlePendingBridges(pendingBridges) {
 }
 
 /**
+ * Subscribe the modern Remote streams for one turn.
+ *
+ * Two logical streams ride the single `/api/remote.mux` socket: `$events`
+ * carries the forwarded waterfalls (approvals and questions) and `session/follow`
+ * carries durable session events plus the opted-in assistant deltas. Nothing is
+ * delivered until each `open` frame is sent.
+ */
+function subscribeModernStreams(client, sessionId, turn) {
+  const mux = new DshRemoteMux(client.muxUrl(), {
+    headers: client.muxHeaders(),
+    log: logDebug,
+  });
+  mux.connect();
+
+  mux.open('$events', {}, {
+    onValue: (value) => {
+      const instruction = projectRemoteEventFrame(value);
+      if (!instruction) {
+        return;
+      }
+      turn.lastActivityAt = Date.now();
+      switch (instruction.kind) {
+        case 'ready':
+          turn.clientId = instruction.clientId;
+          break;
+        case 'approval-request':
+          turn.waterfallBridges.set(
+            instruction.eventId,
+            trackBridge(
+              turn,
+              bridgeModernApproval(
+                client,
+                turn.clientId,
+                instruction,
+                logDebug,
+                () => turn.withdrawnWaterfalls.has(instruction.eventId)
+              ),
+              'approval'
+            )
+          );
+          break;
+        case 'question-request':
+          turn.waterfallBridges.set(
+            instruction.eventId,
+            trackBridge(
+              turn,
+              bridgeModernQuestion(
+                client,
+                turn.clientId,
+                instruction,
+                logDebug,
+                () => turn.withdrawnWaterfalls.has(instruction.eventId)
+              ),
+              'question'
+            )
+          );
+          break;
+        case 'cancel':
+          // The host withdrew the waterfall: mark it so a late user answer is
+          // not posted, and release the drain — the bridge promise keeps
+          // running in the background until the Java-side prompt resolves
+          // (there is no IPC to dismiss that dialog from here).
+          turn.withdrawnWaterfalls.add(instruction.eventId);
+          if (turn.waterfallBridges.has(instruction.eventId)) {
+            turn.pendingBridges.delete(turn.waterfallBridges.get(instruction.eventId));
+            turn.waterfallBridges.delete(instruction.eventId);
+          }
+          logDebug(`[dsh] waterfall ${instruction.eventId} withdrawn by the host`);
+          break;
+        default:
+          break;
+      }
+    },
+    onError: (error) => logDebug(`[dsh] $events stream error: ${error.message}`),
+  });
+
+  mux.open('session/follow', {
+    request: {
+      address: { kind: 'session', sessionId },
+      // The opening snapshot is history, which the plugin renders from its own
+      // reader; one record is enough to make the window legal.
+      maxMessages: 1,
+      assistantStream: true,
+    },
+  }, {
+    onValue: (value) => {
+      turn.lastActivityAt = Date.now();
+      for (const event of projectFollowFrame(value)) {
+        handleTurnEvent(client, sessionId, turn, event);
+      }
+    },
+    onError: (error) => logDebug(`[dsh] follow stream error: ${error.message}`),
+  });
+
+  return mux;
+}
+
+/** Shared tail: wait for settlement, drain bridges, close the transport. */
+async function finishTurn(turn, mux) {
+  await awaitSettlement(turn);
+  await settlePendingBridges(turn.pendingBridges);
+  endStream();
+  mux.close();
+
+  if (turn.settleError) {
+    emitSendError(turn.settleError, 'DSH');
+    return;
+  }
+  if (!turn.sawTurnStart) {
+    logDebug('turn settled without turn/start (queued turn may have been coalesced)');
+  }
+}
+
+/** One turn against a modern host: `$events` + `session/follow` + prompt. */
+async function runModernTurn(client, sessionId, text, images) {
+  const turn = createTurnState();
+  const mux = subscribeModernStreams(client, sessionId, turn);
+
+  const opened = await awaitMuxOpen(mux);
+  if (!opened) {
+    mux.close();
+    emitSendError('dsh mux WebSocket did not open in time', 'DSH');
+    return;
+  }
+
+  registerShutdownCancel(client, sessionId, mux);
+  if (!(await promptTurn(client, sessionId, mux, text, images))) {
+    return;
+  }
+
+  await finishTurn(turn, mux);
+}
+
+/**
  * @param {object} options
  * @param {string} options.message
  * @param {string} [options.sessionId]
@@ -359,6 +510,11 @@ export async function sendMessage(options = {}) {
   await applyModelSelection(client, sessionId, model, reasoningEffort);
   const { text, images } = buildTurnContent(message, attachments);
 
+  if (client.dialect === MODERN_DIALECT) {
+    await runModernTurn(client, sessionId, text, images);
+    return;
+  }
+
   // Mux subscription must be live before prompt, or early frames are lost.
   const turn = createTurnState();
   const mux = new DshMuxConnection(client.muxUrl(), createMuxHandler(client, sessionId, turn), logDebug);
@@ -375,17 +531,5 @@ export async function sendMessage(options = {}) {
     return;
   }
 
-  await awaitSettlement(turn);
-  await settlePendingBridges(turn.pendingBridges);
-
-  endStream();
-  mux.close();
-
-  if (turn.settleError) {
-    emitSendError(turn.settleError, 'DSH');
-    return;
-  }
-  if (!turn.sawTurnStart) {
-    logDebug('turn settled without turn/start (queued turn may have been coalesced)');
-  }
+  await finishTurn(turn, mux);
 }

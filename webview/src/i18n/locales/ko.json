@@ -238,7 +238,8 @@
           "opencode": "OpenCode",
           "pi": "PI CLI",
           "omp": "OMP CLI",
-          "minimax": "MiniMax Code"
+          "minimax": "MiniMax Code",
+          "zcode": "ZCode"
         },
         "currentProviderAuto": "Currently using automatic selection: {{provider}}",
         "currentProviderManual": "Currently using manually selected provider: {{provider}}",
@@ -948,6 +949,10 @@
           "name": "MiniMax Code",
           "description": "MiniMax 터미널 코딩 에이전트. Node.js 22.19+ / 24+ 필요(23 미지원); 명령: minimax / mcode"
         },
+        "zcode": {
+          "name": "ZCode",
+          "description": "GLM 모델을 사용하는 Zhipu ZCode 데스크톱 코딩 앱"
+        },
         "grok": {
           "name": "Grok CLI",
           "description": "xAI Grok terminal coding agent"
@@ -1445,7 +1450,32 @@
     "bashGroupAllCompleted": "모두 완료",
     "bashGroupFailed": "실패",
     "updatePlan": "계획 업데이트",
-    "applyPatch": "패치 적용"
+    "applyPatch": "패치 적용",
+    "reportFindings": {
+      "title": "리뷰 지적 사항",
+      "findingsCount_one": "지적 {{count}}건",
+      "findingsCount_other": "지적 {{count}}건",
+      "confirmedCount_one": "확인됨 {{count}}건",
+      "confirmedCount_other": "확인됨 {{count}}건",
+      "plausibleCount_one": "검토 필요 {{count}}건",
+      "plausibleCount_other": "검토 필요 {{count}}건",
+      "confirmed": "확인됨",
+      "plausible": "검토 필요",
+      "fixed": "수정됨",
+      "skipped": "건너뜀",
+      "noChangeNeeded": "수정 불필요",
+      "empty": "지적 사항 없음",
+      "summaryLabel": "리뷰 요약",
+      "summary": "요약",
+      "failureScenario": "발생 시나리오",
+      "reviewLevel": "리뷰 수준: {{level}}",
+      "openFile": "{{filePath}} 열기",
+      "expandFinding": "지적 사항 펼치기",
+      "collapseFinding": "지적 사항 접기",
+      "expandReport": "리뷰 지적 사항 펼치기",
+      "collapseReport": "리뷰 지적 사항 접기",
+      "untitled": "제목 없는 지적"
+    }
   },
   "todo": {
     "inProgress": "진행 중 {{completed}}/{{total}} 작업",
@@ -1807,6 +1837,9 @@
     },
     "minimax": {
       "label": "MiniMax Code"
+    },
+    "zcode": {
+      "label": "ZCode"
     },
     "gemini": {
       "label": "Gemini Cli"
