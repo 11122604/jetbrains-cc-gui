@@ -30,6 +30,7 @@ import org.jetbrains.annotations.NotNull;
 
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListModel;
+import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -41,6 +42,7 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
 import java.awt.event.KeyEvent;
@@ -63,6 +65,9 @@ import java.util.function.Consumer;
 public class FindAiHistoryAction extends AnAction implements DumbAware {
 
     private static final Logger LOG = Logger.getInstance(FindAiHistoryAction.class);
+
+    /** 触发搜索所需的最少选中字符数。 */
+    private static final int MIN_SELECTION_LENGTH = 5;
 
     /** Max characters of a flattened preview shown on the second row of a popup item. */
     private static final int PREVIEW_MAX_CHARS = 80;
@@ -93,6 +98,13 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
         String selectedText = editor.getSelectionModel().getSelectedText();
         if (selectedText == null || selectedText.trim().isEmpty()) {
             showInfo(project, ClaudeCodeGuiBundle.message("action.findAiHistory.noSelection"));
+            return;
+        }
+        // 选中内容至少 MIN_SELECTION_LENGTH 个字符，过短的查询会匹配到大量无意义结果
+        String trimmedSelection = selectedText.trim();
+        if (trimmedSelection.length() < MIN_SELECTION_LENGTH) {
+            showInfo(project, ClaudeCodeGuiBundle.message(
+                    "action.findAiHistory.selectionTooShort", MIN_SELECTION_LENGTH));
             return;
         }
         VirtualFile vf = e.getData(CommonDataKeys.VIRTUAL_FILE);
@@ -149,29 +161,51 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         list.getEmptyText().setText(ClaudeCodeGuiBundle.message("action.findAiHistory.noResult"));
 
-        // 当前结果窗的搜索范围（改范围会整体重开一个新窗，不在此原地变更）
-        List<String> scope = new ArrayList<>(initialScope);
+        // Mutable view state. The selected agent drives everything: the project scope,
+        // the result list, and whether "Choose Projects" is usable.
+        final AgentType[] selectedAgentHolder = { AgentType.CLAUDE };
+        final List<String> scope = new ArrayList<>(initialScope);
 
         JLabel scopeLabel = new JLabel(buildScopeText(basePath, scope));
 
         HyperlinkLabel chooseLink = new HyperlinkLabel(
                 ClaudeCodeGuiBundle.message("action.findAiHistory.chooseProjects.link"));
-        // 模态多选框会抢走焦点、导致当前 JBPopup 自动关闭，因此无法原地刷新旧列表。
-        // 改为：选完项目（或取消）后用对应范围重新搜索并弹出一个全新的结果窗。
-        chooseLink.addHyperlinkListener(e ->
-                chooseProjects(project, basePath, new ArrayList<>(scope), selectedRoots ->
-                        reopenWithScope(project, editor, selectedText, filePath, basePath, selectedRoots)));
 
         JPanel scopeBar = new JPanel(new BorderLayout(8, 0));
         scopeBar.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
         scopeBar.add(scopeLabel, BorderLayout.CENTER);
         scopeBar.add(chooseLink, BorderLayout.EAST);
 
+        // Re-search within the current scope and refresh the list in place. Unlike the
+        // agent switch below, changing only projects never clears the agent.
+        chooseLink.addHyperlinkListener(e -> {
+            if (selectedAgentHolder[0] == null) {
+                return; // No agent selected - projects are not available.
+            }
+            chooseProjects(project, basePath, new ArrayList<>(scope), selectedRoots -> {
+                scope.clear();
+                scope.addAll(selectedRoots);
+                scopeLabel.setText(buildScopeText(basePath, scope));
+                refreshList(model, selectedText, scope, selectedAgentHolder[0]);
+            });
+        });
+
+        // Agent selection change: keep the search, the project list and this popup's
+        // controls in sync. Clearing the agent clears the results and the projects.
+        Consumer<AgentType> onAgentChange = (selected) -> applyAgentSelection(
+                project, selectedText, basePath, selected, model, scope, scopeLabel, chooseLink,
+                selectedAgentHolder);
+
+        JPanel agentBar = buildAgentSelectorRow(project, AgentType.CLAUDE, onAgentChange);
+
         JBScrollPane scrollPane = new JBScrollPane(list);
         scrollPane.setPreferredSize(new Dimension(620, Math.min(MAX_VISIBLE_ROWS * ROW_HEIGHT + 8, 448)));
 
         JPanel content = new JPanel(new BorderLayout());
-        content.add(scopeBar, BorderLayout.NORTH);
+        JPanel headerPanel = new JPanel(new BorderLayout());
+        headerPanel.add(scopeBar, BorderLayout.NORTH);
+        headerPanel.add(agentBar, BorderLayout.CENTER);
+        content.add(headerPanel, BorderLayout.NORTH);
         content.add(scrollPane, BorderLayout.CENTER);
 
         final JBPopup[] popupHolder = new JBPopup[1];
@@ -214,6 +248,132 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
         runSearch(project, selectedText, filePath, scope, hits ->
                 ApplicationManager.getApplication().invokeLater(() ->
                         showHitListPopup(project, editor, selectedText, filePath, basePath, scope, hits)));
+    }
+
+    /**
+     * Apply a new agent selection inside an open result popup and keep every control in
+     * sync with it.
+     *
+     * <p>Selecting an agent resets the scope to that agent's projects (defaulting to the
+     * current project) and re-runs the search. Clearing the agent (null) clears the
+     * result list and the project scope and disables "Choose Projects".
+     */
+    private void applyAgentSelection(Project project, String selectedText, String basePath,
+                                     AgentType selected, DefaultListModel<JsonObject> model,
+                                     List<String> scope, JLabel scopeLabel, HyperlinkLabel chooseLink,
+                                     AgentType[] selectedAgentHolder) {
+        selectedAgentHolder[0] = selected;
+
+        if (selected == null) {
+            // No agent: nothing to search and no projects to choose from.
+            model.clear();
+            scope.clear();
+            scopeLabel.setText(ClaudeCodeGuiBundle.message("action.findAiHistory.scope.none"));
+            chooseLink.setEnabled(false);
+            return;
+        }
+
+        chooseLink.setEnabled(true);
+        // Reset to the agent's own projects. Today that is the Claude index, which keeps
+        // the current project first; future agents supply their own roots here.
+        scope.clear();
+        scope.addAll(defaultScopeForAgent(project, basePath, selected));
+        scopeLabel.setText(buildScopeText(basePath, scope));
+        refreshList(model, selectedText, scope, selected);
+    }
+
+    /** Projects selected by default for an agent: the current project when it has any. */
+    private List<String> defaultScopeForAgent(Project project, String basePath, AgentType selected) {
+        if (basePath != null && selected == AgentType.CLAUDE) {
+            return new ArrayList<>(Collections.singletonList(basePath));
+        }
+        // Agents without an index yet contribute no projects; their list stays empty
+        // until their search is implemented.
+        return new ArrayList<>();
+    }
+
+    /** Re-run the search in the background and replace the popup's list content. */
+    private void refreshList(DefaultListModel<JsonObject> model, String selectedText,
+                             List<String> scope, AgentType selected) {
+        if (selected == null) {
+            model.clear();
+            return;
+        }
+        AppExecutorUtil.getAppExecutorService().execute(() -> {
+            try {
+                SnippetSearchService service =
+                        new SnippetSearchService(SnippetIndexHolder.get());
+                JsonArray results = service.searchAsJson(selectedText, null, scope);
+                List<JsonObject> hits = new ArrayList<>();
+                for (JsonElement el : results) {
+                    if (el.isJsonObject()) {
+                        hits.add(el.getAsJsonObject());
+                    }
+                }
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    model.clear();
+                    hits.forEach(model::addElement);
+                });
+            } catch (Exception ex) {
+                LOG.warn("[FindAiHistory] Failed to refresh list", ex);
+            }
+        });
+    }
+
+    /**
+     * Build the agent-type selector at the top of the result popup.
+     *
+     * <p>Selection is single-choice but not mandatory: checking one clears the others,
+     * and clearing the checked one leaves no agent selected. Agents without edit-history
+     * search are disabled; clicking one reports that support is in development. Every
+     * change reports through {@code onAgentChange} so the search, the project scope and
+     * the "Choose Projects" link stay in sync.
+     *
+     * <p>Check boxes with explicit mutual exclusion are used rather than radio buttons:
+     * a radio group cannot be cleared by clicking the selected button, and forcing that
+     * through mouse listeners depends on an event order Swing does not guarantee.
+     */
+    private JPanel buildAgentSelectorRow(Project project, AgentType initiallySelected,
+                                        Consumer<AgentType> onAgentChange) {
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        row.setBorder(BorderFactory.createEmptyBorder(0, 8, 4, 8));
+
+        List<JCheckBox> boxes = new ArrayList<>();
+        for (AgentType agent : AgentType.all()) {
+            JCheckBox box = new JCheckBox(agent.getDisplayName(), agent == initiallySelected);
+            box.setEnabled(agent.isSearchSupported());
+            box.setFocusable(agent.isSearchSupported());
+
+            if (agent.isSearchSupported()) {
+                box.addActionListener(e -> {
+                    if (box.isSelected()) {
+                        // Single choice: checking this one unchecks the rest. setSelected
+                        // only fires item events, so this cannot re-enter the listener.
+                        for (JCheckBox other : boxes) {
+                            if (other != box) {
+                                other.setSelected(false);
+                            }
+                        }
+                        onAgentChange.accept(agent);
+                    } else {
+                        onAgentChange.accept(null);
+                    }
+                });
+            } else {
+                // Not searchable yet: report that the agent is in development.
+                box.addMouseListener(new MouseAdapter() {
+                    @Override
+                    public void mouseClicked(MouseEvent e) {
+                        showInfo(project, ClaudeCodeGuiBundle.message(
+                                "action.findAiHistory.agentComingSoon", agent.getDisplayName()));
+                    }
+                });
+            }
+
+            boxes.add(box);
+            row.add(box);
+        }
+        return row;
     }
 
     /** 范围条文案：仅当前项目时显示「当前项目」，否则显示项目数量。 */

@@ -128,7 +128,8 @@
 
         <!-- Find AI Edit History Action (G0) -->
         <action id="ClaudeCodeGUI.FindAiHistoryAction"
-                class="com.github.claudecodegui.action.editor.FindAiHistoryAction">
+                class="com.github.claudecodegui.action.editor.FindAiHistoryAction"
+                icon="/icons/cc-gui-icon.svg">
             <add-to-group group-id="EditorPopupMenu"
                            anchor="after"
                            relative-to-action="ClaudeCodeGUI.CopySelectionReferenceAction"/>
