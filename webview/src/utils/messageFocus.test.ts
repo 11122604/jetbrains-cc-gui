@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { collectMessageIds, findFocusTarget } from './messageFocus';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  collectMessageIds,
+  expandCollapsedToolBlocks,
+  findFocusTarget,
+} from './messageFocus';
 
 /** Build a container element from an HTML string. */
 function container(html: string): HTMLElement {
@@ -63,5 +67,65 @@ describe('collectMessageIds', () => {
 
   it('returns an empty array for an empty container', () => {
     expect(collectMessageIds(container(''))).toEqual([]);
+  });
+});
+
+describe('expandCollapsedToolBlocks', () => {
+  /** Count header clicks without letting jsdom's default click do anything else. */
+  const spyOnHeader = (root: HTMLElement) => {
+    const header = root.querySelector<HTMLElement>('.task-header');
+    if (!header) throw new Error('test fixture has no .task-header');
+    const spy = vi.fn();
+    header.addEventListener('click', spy);
+    return spy;
+  };
+
+  it('opens a Generic block collapsed to zero height (details still in the DOM)', () => {
+    // Regression: a collapsed Generic block keeps `.task-details` mounted and hides it
+    // with grid-template-rows: 0fr, so "has .task-details" must not mean "expanded".
+    const c = container(`
+      <div class="task-container">
+        <div class="task-header"></div>
+        <div class="task-details-accordion">
+          <div class="task-details">
+            <div class="task-field"><div class="task-field-content">package org.crawler;</div></div>
+          </div>
+        </div>
+      </div>
+    `);
+    const spy = spyOnHeader(c);
+    expect(expandCollapsedToolBlocks(c)).toBe(1);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an expanded Generic block alone', () => {
+    const c = container(`
+      <div class="task-container">
+        <div class="task-header"></div>
+        <div class="task-details-accordion expanded"><div class="task-details"></div></div>
+      </div>
+    `);
+    const spy = spyOnHeader(c);
+    expect(expandCollapsedToolBlocks(c)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('opens an Edit block that mounts no details while collapsed', () => {
+    const c = container(`<div class="task-container"><div class="task-header"></div></div>`);
+    const spy = spyOnHeader(c);
+    expect(expandCollapsedToolBlocks(c)).toBe(1);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an Edit block with rendered details alone', () => {
+    const c = container(`
+      <div class="task-container">
+        <div class="task-header"></div>
+        <div class="task-details"><pre>const a = 1;</pre></div>
+      </div>
+    `);
+    const spy = spyOnHeader(c);
+    expect(expandCollapsedToolBlocks(c)).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
   });
 });

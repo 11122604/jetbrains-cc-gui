@@ -89,14 +89,32 @@ export function findSnippetElement(root: HTMLElement, matchText: string): HTMLEl
 }
 
 /**
- * Open the Edit tool blocks inside a message so their diff lines are rendered.
- * A collapsed block has no `.task-details`; clicking its `.task-header` toggles it
- * (the same control the user clicks). Returns how many were opened.
+ * True when the tool block in this container is collapsed.
+ *
+ * The two layouts differ, so presence of `.task-details` is NOT a usable signal:
+ * Edit blocks mount their diff only while expanded (no `.task-details` at all),
+ * while Generic blocks always mount the accordion and collapse it with
+ * `grid-template-rows: 0fr` — the details stay in the DOM with zero height, so
+ * their text is still matchable while invisible.
+ */
+function isCollapsedToolBlock(container: HTMLElement): boolean {
+  const accordion = container.querySelector<HTMLElement>('.task-details-accordion');
+  if (accordion) {
+    return !accordion.classList.contains('expanded');
+  }
+  return !container.querySelector('.task-details');
+}
+
+/**
+ * Open the collapsed tool blocks inside a message so their content is rendered
+ * and visible: an Edit block's diff lines, or a Generic block's parameters (a
+ * Write call's `content`). Clicking `.task-header` is the same control the user
+ * clicks. Returns how many were opened.
  */
 export function expandCollapsedToolBlocks(root: HTMLElement): number {
   let opened = 0;
   for (const container of root.querySelectorAll<HTMLElement>('.task-container')) {
-    if (container.querySelector('.task-details')) continue;
+    if (!isCollapsedToolBlock(container)) continue;
     const header = container.querySelector<HTMLElement>('.task-header');
     if (header) {
       header.click();

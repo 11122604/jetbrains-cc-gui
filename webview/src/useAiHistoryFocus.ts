@@ -16,8 +16,12 @@ const MAX_POLL_MS = 60_000;
 const STABLE_POLLS = 20;
 /** Polls to wait before asking the list to open a window around the hit. */
 const REVEAL_AFTER_ATTEMPTS = 3;
-/** How long the located message/line stays highlighted. */
-const HIGHLIGHT_MS = 10_000;
+/**
+ * How long the located message/line stays highlighted. Generous on purpose: the
+ * jump also expands a long tool block and scrolls it into view, so the highlight
+ * must outlast reading the surrounding code, not just the scroll animation.
+ */
+const HIGHLIGHT_MS = 5 * 60 * 1000;
 /** Time allowed for the smooth jump before resuming normal scroll handling. */
 const SCROLL_SETTLE_MS = 800;
 /** Retry cadence while collapsed Edit blocks re-render their diff lines. */
@@ -124,15 +128,19 @@ export const useAiHistoryFocus = ({
     let timer = 0;
 
     const focusSnippetLine = (messageNode: HTMLElement, text: string, attempt: number) => {
+      // Expand BEFORE searching. A collapsed Generic block keeps its content in the
+      // DOM at zero height, so searching first would match that invisible text and
+      // return - leaving the block collapsed with nothing visibly highlighted.
+      if (attempt === 0) {
+        expandCollapsedToolBlocks(messageNode);
+      }
+
       const found = findSnippetElement(messageNode, text);
       if (found) {
         found.scrollIntoView({ block: 'center', behavior: 'smooth' });
         found.classList.add('ai-focus-line');
         window.setTimeout(() => found.classList.remove('ai-focus-line'), HIGHLIGHT_MS);
         return;
-      }
-      if (attempt === 0) {
-        expandCollapsedToolBlocks(messageNode);
       }
       if (attempt < LINE_MAX_ATTEMPTS) {
         window.setTimeout(
