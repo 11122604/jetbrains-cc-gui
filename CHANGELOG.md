@@ -1,3 +1,63 @@
+##### **2026年9月23日（v0.5.7）**
+
+English:
+
+✨ Features
+- Add **turn-based pagination for Claude session history**: restoring a session loads the latest 30 turns and "show earlier messages" pulls older pages on scroll-to-top, just like Codex — the bridge groups the transcript into turns with `fromTurn`/`toTurn`/`hasMore`/`cursorReset` metadata, Java pages it under the session lock, and a failed page falls back to the legacy full load so a broken cursor never leaves an empty chat (by @hebulin, @zhukunpenglinyutong)
+- **Reorder queued messages by dragging**: every queue row gets a gripper handle (pointer drag, plus a focusable `role=button` with ArrowUp/ArrowDown for keyboard users), an insert line shows where a message will land between rows, and the list auto-scrolls when the pointer nears its top or bottom edge (by @57ggfk, @zhukunpenglinyutong)
+- Update the model lineup: add **Claude Opus 5.5** (200K / 1M context, $4/$20, reasoning-effort support), add **GPT-6 Sol** ($2/$10) and **GPT-6 Luna** ($0.1/$0.5) with 1.05M context, and drop the retired **GPT-5.4** (by @zhukunpenglinyutong)
+
+🔧 Improvements
+- Make **Git4Idea an optional dependency**: the Commit AI action now lives in a `git-features.xml` loaded only when the bundled Git plugin is present, so CC GUI installs cleanly in Git-less IDE configurations (the Commit AI button simply does not appear) (by @zhukunpenglinyutong, @gadfly3173)
+- **Align chat font sizes with the IDE and default to 100%**: IDE-reported sizes are converted to logical points via `UISettings.getDefFontScale()` so HiDPI displays no longer render chat text larger than the editor, and the level table, valid range and default are consolidated into `utils/fontScale.ts` (the level is now persisted only on an explicit pick) (by @gadfly3173)
+- **Serialize streaming and history loads on the shared transcript**: every message-list reader and writer takes a `SessionState.messageStateLock`, history loads carry an ownership token so a superseded load can neither apply a stale result nor strand the loading flag, transport snapshots are captured under the lock, and the webview event queue is gated on frontend readiness with bounded retries (by @gadfly3173, @zhukunpenglinyutong)
+- Continue the **webview React-health cleanup**: extract `nodeProcessDropdownLayout`, `providerNotConfigured`, `convertAtFileRefsToLinks` and `sampleAnchorItems` into dedicated modules, split the token-tracker dashboard contexts/utilities into their own files so Fast Refresh keeps state, and replace render-time ref mutations with render-scoped values or effect events (by @zhukunpenglinyutong)
+
+🐛 Fixes
+- Make **DSH questions answerable end to end**: answers echo the caller-declared question `id` with free text in `custom` (instead of forwarding question text as ids or folding the note into the option labels), a question/approval waterfall raised by another session on the host-wide `$events` stream no longer pops this window's dialog or steals the reply, a plan-review question renders its markdown plan under a "计划内容" label, the dialog title follows the asking provider, and an answer is posted with the live event client id after waiting for it (by @hesixian, @zhukunpenglinyutong)
+- Fix **DSH sessions landing outside every Project Workspace**: sessions are now created with an explicit `workspaceId` on both wire dialects and resumed threads are re-bound to their workspace, with `realpath`-canonicalized path matching so symlinked project directories stay visible in history (by @hesixian, @zhukunpenglinyutong)
+- Support **MiniMax Code (mcode) ≥ 0.4 stream-json**: parse the `schemaVersion 1` envelope (`item.started/updated/completed`, `turn.completed` usage, `turn.failed`, `exec.completed` errors) alongside the 0.2.x flat events, so a 0.4.x run streams content, thinking, tools and usage instead of ending with no response at all (by @whyz23901, @zhukunpenglinyutong)
+- Clear **stale Claude session IDs** whose transcript was pruned or is missing: the bridge reports a missing session file separately from an empty history, Java throws `SessionHistoryNotFoundException` and drops the saved id so the next send starts fresh, and persisted tab state records its owning project so a restore can no longer revive another project's session (by @gadfly3173, @zhukunpenglinyutong)
+- Follow **symlinked project paths** through Claude and Codex history storage while keeping legacy history locations readable, and preserve **empty Claude page cursors** as the latest-page sentinel so reloading a session no longer returns an empty first page (by @gadfly3173)
+- Show the **CLI's own session title** on paginated Claude history loads (`customTitle > aiTitle > summary > lastPrompt > firstPrompt`) instead of falling back to a mid-conversation prompt (by @gadfly3173)
+- Keep the **chat input state while a past session loads**: pending drafts and in-flight IME commits survive chat view transitions, while Enter, completion, provider menu and dialog interactions stay stable (by @gadfly3173)
+- Render **streaming deltas on a 16 ms timer instead of `requestAnimationFrame`**: deprioritized JCEF paint states defer rAF callbacks indefinitely, so deltas piled up unrendered until a structural snapshot forced a paint (by @gadfly3173)
+- Unify **Codex command and skill completions** in the chat input, and make the **dollar-command channel fail fast** once its loading timeout fires instead of re-waiting 30 seconds on every keystroke (by @gadfly3173, @zhukunpenglinyutong)
+- Harden the **commit-message generator**: retry once through a non-streaming `messages.create()` when a stream returns empty text (DeepSeek's Anthropic-compatible endpoint), reusing the shared ask-request shape with thinking disabled so a reasoning model cannot spend the whole budget on thinking, and Git-less IDEs now stay on the content-diff fallback instead of failing (by @hyczq, @gadfly3173, @zhukunpenglinyutong)
+- Fix the **pi provider on Windows and with version managers**: fall back to stderr when the `pi.cmd` shim writes its whole model table there (the model list no longer shows only "PI Auto"), and lead `PATH` with the resolved binary's own directory without reversing the newest-first version-manager order, so a stale node can no longer shadow a newer one (by @Cyber0xFE, @zhukunpenglinyutong)
+- Coordinate the **ai-bridge daemon's idle exit with Java**, so a normal idle shutdown is no longer misreported as a crash and concurrent requests during shutdown are handled (by @zty-f)
+- Treat a **torn JSONL transcript tail as an incomplete history** instead of a silently empty one (with a 10s grace before serving the parseable prefix), count only history-reproducible rows in the staleness guard, log stale `AskUserQuestion` responses instead of dropping them silently, and stop the boot model-sync retry from outliving the webview page (by @zhukunpenglinyutong, @hesixian)
+
+中文：
+
+✨ 新功能
+- 新增 **Claude 会话历史按回合分页**：恢复会话时先加载最近 30 个回合，向上滚动时通过「显示更早消息」按需加载更早的分页——与 Codex 一致；Node 桥接把消息按回合分组并返回 `fromTurn`/`toTurn`/`hasMore`/`cursorReset` 元数据，Java 在会话锁保护下分页，分页失败时回退到旧的整段加载，游标损坏也不会让用户看到空白对话（by @hebulin、@zhukunpenglinyutong）
+- **排队消息支持拖拽排序**：每条队列消息新增抓手手柄（支持指针拖拽，也可聚焦为 `role=button` 用上下方向键重排），列表之间会显示插入指示线，指针靠近列表上/下边缘时队列自动滚动（by @57ggfk、@zhukunpenglinyutong）
+- 更新模型清单：新增 **Claude Opus 5.5**（200K / 1M 上下文，$4/$20，支持推理强度），新增 **GPT-6 Sol**（$2/$10）与 **GPT-6 Luna**（$0.1/$0.5，1.05M 上下文），并移除已下线的 **GPT-5.4**（by @zhukunpenglinyutong）
+
+🔧 优化
+- **Git4Idea 改为可选依赖**：Commit AI 动作移入仅在存在内置 Git 插件时才加载的 `git-features.xml`，因此在没有 Git 插件的 IDE 中也能正常安装（只是不再显示 Commit AI 按钮）（by @zhukunpenglinyutong、@gadfly3173）
+- **聊天字号与 IDE 对齐并默认 100%**：通过 `UISettings.getDefFontScale()` 把 IDE 上报的字号统一换算为逻辑点，HiDPI 屏幕下聊天字体不再比编辑器偏大；字号档位表、有效范围与默认值统一收敛到 `utils/fontScale.ts`（且仅在用户显式选择时才持久化档位）（by @gadfly3173）
+- **流式输出与历史加载共享同一份对话记录时改为串行**：所有消息列表读写方都持有 `SessionState.messageStateLock`，历史加载携带归属令牌，被取代的加载既不会写入过期结果也不会让 loading 状态卡住；传输快照在锁内捕获；webview 事件队列以前端就绪为门槛并带有限次重试（by @gadfly3173、@zhukunpenglinyutong）
+- 继续 **webview React 健康度清理**：抽出 `nodeProcessDropdownLayout`、`providerNotConfigured`、`convertAtFileRefsToLinks`、`sampleAnchorItems` 等独立模块，把 token-tracker 仪表盘的 context 与工具函数拆分到独立文件以让 Fast Refresh 正确保留状态，并把渲染期修改 ref 的行为改为渲染作用域取值或 effect 事件（by @zhukunpenglinyutong）
+
+🐛 修复
+- **DSH 提问现在可以端到端作答**：回答按调用方声明的 `question.id` 回填、自由文本放入 `custom`（不再把问题文本当作 id，也不再把手填内容折进选项标签）；主机级 `$events` 流上属于其他会话的提问/批准瀑布不再弹出本窗口对话框、也不会抢走回复；计划审查类提问会以「计划内容」标签渲染 markdown 计划；对话框标题跟随提问方 Provider；作答会先等待并携带实时的事件 clientId（by @hesixian、@zhukunpenglinyutong）
+- 修复 **DSH 会话落在所有 Project Workspace 之外** 的问题：两种线协议下都显式携带 `workspaceId` 创建会话，续接的线程会重新绑定到所属 Workspace，并用 `realpath` 归一化路径比较，符号链接项目目录下的会话不再从历史列表消失（by @hesixian、@zhukunpenglinyutong）
+- 支持 **MiniMax Code（mcode）≥ 0.4 的 stream-json 协议**：在解析 0.2.x 扁平事件的同时解析 `schemaVersion 1` 信封（`item.started/updated/completed`、`turn.completed` 用量、`turn.failed`、`exec.completed` 错误），0.4.x 运行不再出现「提交后毫无响应」，而是正常流式输出正文、思考、工具与用量（by @whyz23901、@zhukunpenglinyutong）
+- 修复 **Claude 会话记录被清理或丢失后仍沿用过期 session ID**：桥接会把「会话文件缺失」与「空历史」区分上报，Java 抛出 `SessionHistoryNotFoundException` 并清除已保存的 id，让下一次发送重新开会话；持久化的标签页状态会记录所属项目，避免恢复时唤起别的项目的会话（by @gadfly3173、@zhukunpenglinyutong）
+- Claude 与 Codex 历史存储统一**跟随符号链接项目路径**，同时保留旧位置历史可读；并保留**空的 Claude 分页游标**作为「最新一页」哨兵值，重新加载会话不再返回空的第一页（by @gadfly3173）
+- 分页加载 Claude 历史时展示 **CLI 自己的会话标题**（`customTitle > aiTitle > summary > lastPrompt > firstPrompt`），不再退化为对话中段的提示词（by @gadfly3173）
+- 修复 **加载历史会话时聊天输入状态丢失**：草稿与正在输入的输入法组合内容可跨视图切换保留，同时 Enter、补全、Provider 菜单与对话框交互保持稳定（by @gadfly3173）
+- **流式增量改用 16ms 定时器渲染，不再依赖 `requestAnimationFrame`**：JCEF 降优先级绘制状态下 rAF 回调会被无限推迟，导致增量一直堆积，直到结构化快照强制重绘才显示（by @gadfly3173）
+- 统一聊天输入框的 **Codex 命令与技能补全**；**美元命令通道**在加载超时后立即失败，不再每次按键都重新等待 30 秒（by @gadfly3173、@zhukunpenglinyutong）
+- 加固 **提交信息生成**：流式返回空文本时（DeepSeek 的 Anthropic 兼容端点）改用非流式 `messages.create()` 重试一次，并复用共享的 ask 请求形态、关闭 thinking，避免推理模型把预算全部花在思考上；没有 Git 插件的 IDE 继续走内容兜底而非直接失败（by @hyczq、@gadfly3173、@zhukunpenglinyutong）
+- 修复 **pi Provider 在 Windows 与版本管理器下的问题**：`pi.cmd` 把模型表全写到 stderr 时回退读取 stderr（模型列表不再只剩「PI Auto」）；PATH 前置时以「已解析二进制自身目录」打头且不颠倒版本管理器的最新优先顺序，旧版 node 不再遮蔽新版本（by @Cyber0xFE、@zhukunpenglinyutong）
+- **ai-bridge daemon 的空闲退出与 Java 侧协同**：正常空闲退出不再被误判为崩溃，退出过程中的并发请求也能正确处理（by @zty-f）
+- 把 **JSONL 尾部截断视为历史不完整**而非静默的空历史（撕裂尾部超过 10 秒宽限期后先返回可解析前缀）；过期守卫只统计可被历史复现的行；过期的 `AskUserQuestion` 响应改为记录日志而非静默丢弃；启动时的模型同步重试不再在 webview 页面销毁后继续执行（by @zhukunpenglinyutong、@hesixian）
+
+---
+
 ##### **2026年9月15日（v0.5.6）**
 
 English:
