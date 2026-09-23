@@ -13,10 +13,12 @@ import { AppSettingsOverlay } from './components/AppSettingsOverlay';
 import { AppChatArea } from './components/AppChatArea';
 import { AppDialogMounts } from './components/AppDialogMounts';
 import { useUIState } from './contexts/UIStateContext';
+import { useMessages } from './contexts/MessagesContext';
 import { DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS } from './utils/permissionDialogTimeout';
 import { createApplyHistoryModel } from './applyHistoryModel';
 import { useAppGlobalEffects } from './useAppGlobalEffects';
 import { useAppChatController } from './useAppChatController';
+import { useAiHistoryFocus } from './useAiHistoryFocus';
 
 const App = () => {
   const { t } = useTranslation();
@@ -25,6 +27,8 @@ const App = () => {
   // everything else from UIStateContext is consumed inside the extracted
   // components/hooks (same convention as ChatScreen / AppDialogs).
   const { toasts, dismissToast, currentView, addToast } = useUIState();
+  // Consumed by the Find AI Edit History jump (it waits for the loaded snapshot).
+  const { messages } = useMessages();
 
   // ── Permission dialog timeout (synced with backend config) ──
   const [permissionDialogTimeoutSeconds, setPermissionDialogTimeoutSeconds] = useState(DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS);
@@ -69,7 +73,8 @@ const App = () => {
     findToolResult, getToolResultRaw, subagents, globalTodos,
     filteredFileChanges, rewindableMessages,
     subagentHistoryCtxValue, sessionIdCtxValue,
-    chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef,
+    chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef, userPausedRef,
+    historyReadOnly,
     handleUndoFile, onDiscardAll, handleKeepAll,
     handleSubmit, interruptSession, messageQueue, dequeueMessage, reorderMessageQueue,
     handleOpenRewindSelectDialog, handleNavigateToProviderSettings, wrappedHandleProviderSelect,
@@ -81,6 +86,16 @@ const App = () => {
   } = useAppChatController({ model, applyHistoryModel, setPermissionDialogTimeoutSeconds });
 
   const statusPanelExpanded = !userCollapsedRef.current;
+
+  // ── Find AI Edit History: receive the hit and jump to the edited line ──
+  useAiHistoryFocus({
+    messages,
+    messagesContainerRef,
+    messageListRef,
+    isAutoScrollingRef,
+    userPausedRef,
+    loadHistorySession,
+  });
 
   // ── Render ──
   return (
@@ -172,6 +187,7 @@ const App = () => {
           messageQueue={messageQueue}
           onRemoveFromQueue={dequeueMessage}
           onReorderQueue={reorderMessageQueue}
+          historyReadOnly={historyReadOnly}
           onLoadSession={loadHistorySession}
           onDeleteSession={deleteHistorySession}
           onDeleteSessions={deleteHistorySessions}

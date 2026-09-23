@@ -711,7 +711,15 @@ public class ClaudeSession {
      * Load message history from the server.
      */
     public CompletableFuture<Void> loadFromServer() {
-        return messageOrchestrator.loadFromServer();
+        return loadFromServer(false);
+    }
+
+    /**
+     * @param fullHistory load the whole transcript rather than the newest page; used by
+     *                    callers that must reach an arbitrary earlier message.
+     */
+    public CompletableFuture<Void> loadFromServer(boolean fullHistory) {
+        return messageOrchestrator.loadFromServer(fullHistory);
     }
 
     /**

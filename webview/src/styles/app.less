@@ -35,3 +35,43 @@
 
 // 响应式适配
 @import "less/responsive.less";
+
+// G0: 跨项目只读查看会话时，输入区上方提示条
+.ai-history-readonly-banner {
+  margin: 0 12px 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 6px;
+  color: var(--cc-text-secondary, rgba(128, 128, 128, 0.95));
+  background: rgba(128, 128, 128, 0.1);
+  border: 1px solid var(--cc-border-color, rgba(128, 128, 128, 0.25));
+}
+
+// G0: 查找 AI 修改历史 —— 命中消息高亮。
+// The class itself is removed after 10s by App.tsx (FOCUS_HIGHLIGHT_MS); the pulse
+// animation only runs for the first ~4.8s, then the static background/border remains.
+.ai-focus-highlight {
+  background-color: rgba(51, 122, 254, 0.12);
+  border-left: 3px solid rgba(51, 122, 254, 1);
+  border-radius: 4px;
+  animation: aiFocusPulse 1.6s ease-in-out 3;
+}
+@keyframes aiFocusPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(51, 122, 254, 0.45); }
+  50%  { box-shadow: 0 0 0 6px rgba(51, 122, 254, 0.25); }
+  100% { box-shadow: 0 0 0 0 rgba(51, 122, 254, 0); }
+}
+
+// G0: 命中的具体代码行（比整条消息更精确的落点）
+.ai-focus-line {
+  outline: 2px solid rgba(255, 176, 32, 0.95);
+  outline-offset: 1px;
+  border-radius: 2px;
+  background-color: rgba(255, 176, 32, 0.22);
+  animation: aiFocusLinePulse 1.2s ease-in-out 3;
+}
+@keyframes aiFocusLinePulse {
+  0%   { background-color: rgba(255, 176, 32, 0.45); }
+  100% { background-color: rgba(255, 176, 32, 0.22); }
+}

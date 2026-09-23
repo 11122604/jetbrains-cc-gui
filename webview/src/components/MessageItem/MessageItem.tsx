@@ -236,11 +236,25 @@ export const MessageItem = memo(function MessageItem({
     return <></>;
   }
 
+  // History messages (loaded from JSONL) carry `message.id` and a top-level
+  // `uuid`, whereas streaming messages nest both under `raw`. Read either shape
+  // so the "Find AI Edit History" focus lookup can match the id it indexed.
+  const rawObject = (
+    message.raw && typeof message.raw === 'object' ? message.raw : undefined
+  ) as { message?: { id?: string }; uuid?: string } | undefined;
+  const focusMessageId =
+    (message as { message?: { id?: string } }).message?.id
+    ?? rawObject?.message?.id
+    ?? (typeof message.id === 'string' ? message.id : undefined);
+  const focusMessageUuid = (message as { uuid?: string }).uuid ?? rawObject?.uuid;
+
   return (
     <div
       className={`message ${message.type}${isLast ? ' is-last-message' : ''}${isProviderNotConfigured ? ' provider-not-configured' : ''}`}
       ref={anchorRefCallback}
       data-message-anchor-id={message.type === 'user' ? messageKey : undefined}
+      data-message-id={focusMessageId}
+      data-message-uuid={focusMessageUuid}
     >
       <UserMessageHeader
         messageType={message.type}

@@ -58,6 +58,38 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         return instances.get(project);
     }
 
+    /**
+     * 创建一个新的聊天 tab（复用 CreateNewTabAction 的创建逻辑），返回新 tab 的聊天窗口。
+     * 供「在新 tab 打开历史会话」等场景复用。
+     */
+    public static ClaudeChatWindow createNewTab(@NotNull Project project) {
+        ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID);
+        if (toolWindow == null) {
+            return null;
+        }
+        ContentManager contentManager = toolWindow.getContentManager();
+        Content selectedContent = contentManager.getSelectedContent();
+        ClaudeChatWindow sourceWindow = selectedContent == null
+                ? null : getChatWindowForContent(selectedContent);
+        if (sourceWindow == null) {
+            sourceWindow = getChatWindow(project);
+        }
+        ClaudeChatWindow newChatWindow = new ClaudeChatWindow(project, true);
+        if (sourceWindow != null) {
+            newChatWindow.inheritSessionPreferencesFrom(sourceWindow);
+        }
+        String tabName = getNextTabName(toolWindow);
+        ContentFactory contentFactory = ContentFactory.getInstance();
+        Content content = contentFactory.createContent(newChatWindow.getContent(), tabName, false);
+        content.setCloseable(true);
+        content.setDisposer(newChatWindow::dispose);
+        contentManager.addContent(content);
+        newChatWindow.setParentContent(content);
+        contentManager.setSelectedContent(content);
+        toolWindow.show(null);
+        return newChatWindow;
+    }
+
     public static String getNextTabName(ToolWindow toolWindow) {
         if (toolWindow == null) {
             return TAB_NAME_PREFIX + "1";

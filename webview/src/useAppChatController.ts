@@ -195,7 +195,7 @@ export const useAppChatController = ({
     forceCreateNewSessionWithProvider,
     handleConfirmNewSession, handleCancelNewSession,
     handleConfirmInterrupt, handleCancelInterrupt,
-    loadHistorySession, deleteHistorySession, deleteHistorySessions, exportHistorySession,
+    loadHistorySession, historyReadOnly, deleteHistorySession, deleteHistorySessions, exportHistorySession,
     toggleFavoriteSession, updateHistoryTitle, applyHistoryTitleLocal, convertToCliSession,
   } = useSessionManagement({
     messages, loading, historyData, currentSessionId, currentSessionIdRef, currentProvider,
@@ -384,7 +384,9 @@ export const useAppChatController = ({
     filteredFileChanges, rewindableMessages,
     subagentHistoryCtxValue, sessionIdCtxValue,
     // Refs
-    chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef,
+    chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef, userPausedRef,
+    // Cross-project (read-only) sessions disable sending in ChatScreen
+    historyReadOnly,
     // Message actions
     handleUndoFile, onDiscardAll, handleKeepAll,
     handleSubmit, interruptSession, messageQueue, dequeueMessage, reorderMessageQueue,

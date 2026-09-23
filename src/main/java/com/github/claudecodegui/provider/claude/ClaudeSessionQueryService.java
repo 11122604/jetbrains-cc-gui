@@ -13,15 +13,15 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -210,19 +210,29 @@ class ClaudeSessionQueryService {
             process = pb.start();
             processManager.registerProcess(channelId, process);
 
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
+            // Read stdout on a separate thread so waitFor's timeout still applies.
+            // readAllBytes blocks until the child exits and closes the stream; running
+            // it inline ahead of waitFor means a hung child blocks the read forever and
+            // the timeout check is never reached. Mirrors TokenTrackerHandler#runProcess.
+            Process startedProcess = process;
+            CompletableFuture<String> outputFuture = CompletableFuture.supplyAsync(() -> {
+                try (InputStream in = startedProcess.getInputStream()) {
+                    return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    return "";
                 }
-            }
+            });
 
             boolean finished = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {
+                // Terminating the child closes the pipe's write end, so the reader hits EOF and exits
                 PlatformUtils.terminateProcess(process);
                 throw new RuntimeException("Node.js process timed out after " + PROCESS_TIMEOUT_SECONDS + " seconds");
             }
+
+            // The process has exited, so the reader normally finishes right away;
+            // this short timeout is only a safety net
+            output.append(outputFuture.get(5, TimeUnit.SECONDS));
         } finally {
             if (process != null) {
                 if (process.isAlive()) {

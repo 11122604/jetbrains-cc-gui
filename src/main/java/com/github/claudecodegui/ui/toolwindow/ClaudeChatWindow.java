@@ -524,6 +524,11 @@ public class ClaudeChatWindow {
         return initialized;
     }
 
+    /** 前端 React 是否已就绪（收到 frontend_ready 信号）。载入历史需等此标志，而非仅 isInitialized。 */
+    public boolean isFrontendReady() {
+        return frontendReady;
+    }
+
     public Content getParentContent() {
         return parentContent;
     }

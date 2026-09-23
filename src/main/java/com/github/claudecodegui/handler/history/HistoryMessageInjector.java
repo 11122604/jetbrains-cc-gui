@@ -66,6 +66,11 @@ public class HistoryMessageInjector {
         String provider = currentProvider;
         String resolvedSessionId = sessionId;
         String model = null;
+        // 跨项目查看时前端会显式带上目标会话的 cwd；为空则回退当前项目工作目录（现状）。
+        String overrideCwd = null;
+        // 「查找 AI 修改历史」跳转会要求全量加载：目标消息可能在更早的分页里，
+        // 若只加载最新一页，跳转将无处可定位。
+        boolean fullHistory = false;
 
         try {
             JsonObject payload = new Gson().fromJson(sessionId, JsonObject.class);
@@ -82,12 +87,21 @@ public class HistoryMessageInjector {
                         model = m.trim();
                     }
                 }
+                if (payload.has("cwd") && !payload.get("cwd").isJsonNull()) {
+                    String c = payload.get("cwd").getAsString();
+                    if (c != null && !c.trim().isEmpty()) {
+                        overrideCwd = c.trim();
+                    }
+                }
+                if (payload.has("fullHistory") && !payload.get("fullHistory").isJsonNull()) {
+                    fullHistory = payload.get("fullHistory").getAsBoolean();
+                }
             }
         } catch (Exception ignored) {
             // Backward compatible: legacy payload is the raw sessionId string.
         }
 
-        String rawPath = context.resolveEffectiveWorkingDirectory();
+        String rawPath = overrideCwd != null ? overrideCwd : context.resolveEffectiveWorkingDirectory();
         String nodePath = NodeDetector.getInstance().getCachedNodePath();
         String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
         if (projectPath == null) {
@@ -105,7 +119,8 @@ public class HistoryMessageInjector {
         } else {
             // Claude / CLI providers: use existing callback mechanism
             if (sessionLoadCallback != null) {
-                sessionLoadCallback.onLoadSession(resolvedSessionId, projectPath, provider, model);
+                sessionLoadCallback.onLoadSession(resolvedSessionId, projectPath, provider, model,
+                        fullHistory);
             } else {
                 LOG.warn("[HistoryHandler] WARNING: No session load callback set");
                 notifyHistoryLoadComplete();

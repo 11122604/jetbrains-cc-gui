@@ -216,7 +216,18 @@ public class SessionLifecycleManager {
      * @param model when non-blank, restores that model instead of keeping the previous UI selection
      */
     public void loadHistorySession(String sessionId, String projectPath, String provider, String model) {
-        LOG.info("Loading history session: " + sessionId + " from project: " + projectPath);
+        loadHistorySession(sessionId, projectPath, provider, model, false);
+    }
+
+    /**
+     * @param fullHistory load the whole transcript rather than the newest page. Used when
+     *                    the caller already knows which message it needs (the Find AI Edit
+     *                    History jump), so paging cannot leave that message unloaded.
+     */
+    public void loadHistorySession(String sessionId, String projectPath, String provider,
+                                   String model, boolean fullHistory) {
+        LOG.info("Loading history session: " + sessionId + " from project: " + projectPath
+                + (fullHistory ? " (full history)" : ""));
 
         ClaudeSession oldSession = host.getSession();
         String previousPermissionMode;
@@ -269,7 +280,7 @@ public class SessionLifecycleManager {
                                     ? projectPath : NodeDetector.convertToWslPath(determineWorkingDirectory());
             newSession.setSessionInfo(sessionId, workingDir);
 
-            newSession.loadFromServer().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
+            newSession.loadFromServer(fullHistory).thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
                 // loadFromServer only enqueues updateMessages through the coalescer; if we
                 // call historyLoadComplete immediately the frontend releases the transition
                 // guard before the snapshot arrives (or a reordered clearMessages can wipe a

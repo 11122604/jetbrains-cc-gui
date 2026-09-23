@@ -76,6 +76,9 @@ export interface ChatScreenProps {
   onDiscardAll: () => void;
   onKeepAll: FileChangeMgmt['handleKeepAll'];
 
+  // 跨项目只读查看（会话不属于当前 IDE 项目）：禁用发送新消息
+  historyReadOnly?: boolean;
+
   // Submit / interrupt / nav
   onSubmit: (content: string, attachments?: Attachment[]) => void;
   onInterrupt: () => void;
@@ -154,6 +157,7 @@ export const ChatScreen = ({
   onStreamingEnabledChange,
   onAutoOpenFileEnabledChange, onLongContextChange,
   messageQueue, onRemoveFromQueue, onReorderQueue,
+  historyReadOnly = false,
 }: ChatScreenProps) => {
   const { t } = useTranslation();
   const { messages, status, loading, isThinking, streamingActive, loadingStartTime, subagentHistories } = useMessages();
@@ -185,6 +189,10 @@ export const ChatScreen = ({
     [messages],
   );
   const handleSubmit = useCallback((content: string, attachments?: Attachment[]) => {
+    // 跨项目只读会话：任何路径都不允许发送新消息
+    if (historyReadOnly) {
+      return;
+    }
     if (shouldToggleCodexPet(currentProvider, content, attachments?.length ?? 0)) {
       togglePet();
       setDraftInput('');
@@ -195,7 +203,7 @@ export const ChatScreen = ({
       return;
     }
     onSubmit(content, attachments);
-  }, [addToast, currentProvider, onSubmit, petEnabled, setDraftInput, t, togglePet]);
+  }, [addToast, currentProvider, historyReadOnly, onSubmit, petEnabled, setDraftInput, t, togglePet]);
 
   // Signal that the search hook can listen to for re-scanning. Combines
   // length + last timestamp + streaming flag + last-message content size.
@@ -336,8 +344,14 @@ export const ChatScreen = ({
       </StatusPanelErrorBoundary>
 
       <div className="input-area" ref={inputAreaRef}>
+        {historyReadOnly && (
+          <div className="ai-history-readonly-banner">
+            {t('aiHistory.readOnlyBanner', 'Read-only: this session belongs to another project. Sending new messages is disabled.')}
+          </div>
+        )}
         <ChatInputBox
           ref={chatInputRef}
+          disabled={historyReadOnly}
           isLoading={loading}
           selectedModel={selectedModel}
           permissionMode={permissionMode}

@@ -166,6 +166,16 @@ public class SessionMessageOrchestrator {
     }
 
     public CompletableFuture<Void> loadFromServer() {
+        return loadFromServer(false);
+    }
+
+    /**
+     * @param fullHistory load the whole Claude transcript instead of the newest page, so
+     *                    callers that must reach an arbitrary message (the Find AI Edit
+     *                    History jump) do not depend on paging that message into memory
+     *                    first. Ignored for providers without pagination.
+     */
+    public CompletableFuture<Void> loadFromServer(boolean fullHistory) {
         String requestedSessionId = state.getSessionId();
         if (requestedSessionId == null) {
             return CompletableFuture.completedFuture(null);
@@ -186,7 +196,8 @@ public class SessionMessageOrchestrator {
 
                 List<JsonObject> serverMessages;
                 if ("claude".equals(requestedProvider)) {
-                    serverMessages = loadClaudeSessionWithPagination(requestedSessionId, requestedCwd);
+                    serverMessages = loadClaudeSessionWithPagination(
+                            requestedSessionId, requestedCwd, fullHistory);
                 } else {
                     serverMessages = historyAccess.getProviderSessionMessages(
                             requestedProvider, requestedSessionId, requestedCwd);
@@ -291,7 +302,18 @@ public class SessionMessageOrchestrator {
      * fails or returns invalid data, so a broken cursor never leaves the
      * user with an empty chat.
      */
-    private List<JsonObject> loadClaudeSessionWithPagination(String sessionId, String cwd) {
+    private List<JsonObject> loadClaudeSessionWithPagination(String sessionId, String cwd,
+                                                             boolean fullHistory) {
+        if (fullHistory) {
+            // Caller needs the entire transcript in memory (e.g. to jump to an old
+            // edit), so skip pagination and load everything in one request.
+            LOG.info("Loading full Claude history on request: " + sessionId);
+            claudeHistoryFromTurn = 0;
+            claudeHistoryTotalTurns = 0;
+            claudeHistoryHasMore = false;
+            return historyAccess.getProviderSessionMessages("claude", sessionId, cwd);
+        }
+
         // Try the paginated path first: latest page only, then prepend earlier
         // pages as the user scrolls up.
         try {

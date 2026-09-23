@@ -123,7 +123,12 @@ describe('ConversationSearch', () => {
 
   it('invokes revealAll on the MessageList ref when query begins', () => {
     const ref = setupContainer('<p>hello</p>');
-    const reveal: MessageListRevealHandle = { revealAll: vi.fn(() => 5) };
+    const reveal: MessageListRevealHandle = {
+      revealAll: vi.fn(() => 5),
+      focusMessage: vi.fn(() => false),
+      loadEarlierPage: vi.fn(() => false),
+      canLoadEarlierPage: vi.fn(() => false),
+    };
     const messageListRef = { current: reveal } as React.RefObject<MessageListRevealHandle>;
     render(
       <ConversationSearch

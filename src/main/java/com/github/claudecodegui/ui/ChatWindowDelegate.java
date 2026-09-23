@@ -424,7 +424,7 @@ public class ChatWindowDelegate {
         messageDispatcher.registerHandler(permissionHandler);
 
         HistoryHandler historyHandler = new HistoryHandler(handlerContext);
-        historyHandler.setSessionLoadCallback((sessionId, projectPath, provider, model) -> {
+        historyHandler.setSessionLoadCallback((sessionId, projectPath, provider, model, fullHistory) -> {
             ClaudeSession current = host.getSession();
             boolean sameSession = current != null
                     && sessionId != null
@@ -440,7 +440,8 @@ public class ChatWindowDelegate {
                 }
                 host.reloadActiveSessionMessages();
             } else {
-                host.getSessionLifecycleManager().loadHistorySession(sessionId, projectPath, provider, model);
+                host.getSessionLifecycleManager().loadHistorySession(sessionId, projectPath, provider,
+                        model, fullHistory);
             }
         });
         host.setHistoryHandler(historyHandler);

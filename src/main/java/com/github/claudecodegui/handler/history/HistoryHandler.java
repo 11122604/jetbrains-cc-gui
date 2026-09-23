@@ -35,8 +35,11 @@ public class HistoryHandler extends BaseMessageHandler {
     public interface SessionLoadCallback {
         /**
          * @param model optional model id from the history row; null/blank keeps previous UI model
+         * @param fullHistory load the whole transcript instead of the newest page, for callers
+         *                    that need an arbitrary earlier message already in memory
          */
-        void onLoadSession(String sessionId, String projectPath, String provider, String model);
+        void onLoadSession(String sessionId, String projectPath, String provider, String model,
+                           boolean fullHistory);
     }
 
     private SessionLoadCallback sessionLoadCallback;
