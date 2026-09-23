@@ -1,14 +1,12 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { CodexSubscriptionQuotaSnapshot } from '../../../utils/codexSubscriptionQuotaCapabilities';
+import {
+  fetchCodexSubscriptionQuota,
+  subscribeCodexSubscriptionQuota,
+  type CodexSubscriptionQuotaSnapshot,
+} from '../../../utils/codexSubscriptionQuotaCapabilities';
+import { getAppViewport } from '../../../utils/viewport';
 
-const SUBMENU_STYLE: React.CSSProperties = {
-  // Float the quota panel above the whole dropdown (full-width, never overlapping rows).
-  position: 'absolute',
-  left: 0,
-  right: 0,
-  zIndex: 10001,
-  whiteSpace: 'normal',
-};
 const SUBMENU_ROW_STYLE: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -29,19 +27,86 @@ function formatTokens(value: number): string {
 }
 
 interface CodexQuotaSubmenuProps {
-  quota: CodexSubscriptionQuotaSnapshot | null;
-  loading: boolean;
-  /** Distance (px) from the Codex row's bottom edge up to the floating quota panel. */
-  bottom: number;
-  onHover: () => void;
+  id: string;
+  anchorRef: RefObject<HTMLDivElement | null>;
+}
+
+interface QuotaPanelPosition {
+  left: number;
+  top: number;
+  width: number;
+  maxHeight: number;
 }
 
 /**
- * CodexQuotaSubmenu - floating Codex subscription quota panel
- * Hovers above the provider dropdown when the Codex row is hovered.
+ * CodexQuotaSubmenu - Codex subscription quota panel.
  */
-export const CodexQuotaSubmenu = ({ quota, loading, bottom, onHover }: CodexQuotaSubmenuProps) => {
+export const CodexQuotaSubmenu = ({ id, anchorRef }: CodexQuotaSubmenuProps) => {
   const { t } = useTranslation();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [quota, setQuota] = useState<CodexSubscriptionQuotaSnapshot | null>(null);
+  const [position, setPosition] = useState<QuotaPanelPosition | null>(null);
+  const loading = quota === null;
+
+  useEffect(() => {
+    const unsubscribe = subscribeCodexSubscriptionQuota(setQuota);
+    fetchCodexSubscriptionQuota();
+    return unsubscribe;
+  }, []);
+
+  const reposition = useCallback(() => {
+    const anchor = anchorRef.current;
+    const panel = panelRef.current;
+    if (!anchor || !panel) return;
+
+    const rect = anchor.getBoundingClientRect();
+    const viewport = getAppViewport();
+    const scale = viewport.fixedPosDivisor;
+    const padding = 8;
+    const desiredWidth = Math.min(220 * scale, viewport.width - padding * 2);
+    const spaceRight = viewport.left + viewport.width - padding - rect.right;
+    const spaceLeft = rect.left - viewport.left - padding;
+    const spaceAbove = rect.top - viewport.top - padding;
+    const spaceBelow = viewport.top + viewport.height - padding - rect.bottom;
+    const sideSpace = Math.max(spaceRight, spaceLeft);
+    // Unlike actionable submenus, quota details must never cover provider rows.
+    // A short viewport can use a narrower side panel instead of a tiny top sliver.
+    const useSide = sideSpace >= desiredWidth
+      || (sideSpace >= 120 * scale && Math.max(spaceAbove, spaceBelow) < 120 * scale);
+    const width = Math.max(1, useSide ? Math.min(desiredWidth, sideSpace) : desiredWidth);
+    const availableHeight = useSide ? viewport.height - padding * 2 : Math.max(spaceAbove, spaceBelow);
+    const maxHeight = Math.max(1, Math.min(300 * scale, availableHeight));
+    const height = Math.min(maxHeight, (panel.scrollHeight + 2) * scale);
+    const left = useSide
+      ? spaceRight >= width ? rect.width : -width
+      : Math.max(viewport.left + padding - rect.left,
+        Math.min(0, viewport.left + viewport.width - padding - rect.left - width));
+    const top = useSide
+      ? Math.max(viewport.top + padding - rect.top,
+        Math.min(0, viewport.top + viewport.height - padding - rect.top - height))
+      : spaceAbove >= spaceBelow ? -height : rect.height;
+    const next = { left: left / scale, top: top / scale, width: width / scale, maxHeight: maxHeight / scale };
+    setPosition((current) => current
+      && current.left === next.left && current.top === next.top
+      && current.width === next.width && current.maxHeight === next.maxHeight
+      ? current : next);
+  }, [anchorRef]);
+
+  useLayoutEffect(() => {
+    reposition();
+  }, [reposition, quota, t, position?.width]);
+
+  useEffect(() => {
+    window.addEventListener('resize', reposition);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reposition);
+    if (anchorRef.current) observer?.observe(anchorRef.current);
+    if (panelRef.current) observer?.observe(panelRef.current);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      observer?.disconnect();
+    };
+  }, [anchorRef, reposition]);
+
   const fiveHour = quota?.windows.fiveHour;
   const weekly = quota?.windows.weekly;
   // API-key providers are billed per token and have no subscription quota,
@@ -102,13 +167,13 @@ export const CodexQuotaSubmenu = ({ quota, loading, bottom, onHover }: CodexQuot
 
   return (
     <div
-      className="selector-dropdown"
-      style={{ ...SUBMENU_STYLE, bottom: `${bottom}px` }}
+      id={id}
+      ref={panelRef}
+      role="tooltip"
+      tabIndex={-1}
+      className="selector-dropdown provider-quota-panel"
+      style={{ position: 'absolute', zIndex: 10001, ...position }}
       onClick={(e) => e.stopPropagation()}
-      onMouseEnter={(e) => {
-        e.stopPropagation();
-        onHover();
-      }}
     >
       <div className="selector-option disabled" style={{ cursor: 'default' }}>
         <span className="codicon codicon-dashboard" />

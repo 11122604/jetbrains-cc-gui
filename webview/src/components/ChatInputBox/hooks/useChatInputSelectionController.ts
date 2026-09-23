@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import type { ForwardedRef, MutableRefObject, RefObject } from 'react';
+import type { ForwardedRef, RefObject } from 'react';
 import { cutSelection } from '../../../hooks/useContextMenu.js';
 import type { ChatInputBoxHandle, FileTagInfo } from '../types.js';
 import { useChatInputImperativeHandle } from './useChatInputImperativeHandle.js';
@@ -19,7 +19,7 @@ interface UseChatInputSelectionControllerOptions {
   editableRef: RefObject<HTMLDivElement | null>;
   getTextContent: () => string;
   invalidateCache: () => void;
-  isExternalUpdateRef: MutableRefObject<boolean>;
+  cancelPendingInput: () => void;
   setHasContent: (hasContent: boolean) => void;
   adjustHeight: () => void;
   clearInput: () => void;
@@ -37,7 +37,7 @@ export function useChatInputSelectionController({
   editableRef,
   getTextContent,
   invalidateCache,
-  isExternalUpdateRef,
+  cancelPendingInput,
   setHasContent,
   adjustHeight,
   clearInput,
@@ -97,7 +97,7 @@ export function useChatInputSelectionController({
     editableRef,
     getTextContent,
     invalidateCache,
-    isExternalUpdateRef,
+    cancelPendingInput,
     setHasContent,
     adjustHeight,
     focusInput,

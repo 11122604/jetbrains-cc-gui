@@ -740,6 +740,9 @@ export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
  */
 export type CodexFastMode = 'normal' | 'fast';
 
+/** Which key combination sends the message: plain Enter, or Cmd/Ctrl+Enter. */
+export type SendShortcut = 'enter' | 'cmdEnter';
+
 /**
  * Reasoning level information
  */
@@ -909,7 +912,7 @@ export interface ChatInputBoxProps {
   onStreamingEnabledChange?: (enabled: boolean) => void;
 
   /** Send shortcut setting: 'enter' = Enter sends | 'cmdEnter' = Cmd/Ctrl+Enter sends */
-  sendShortcut?: 'enter' | 'cmdEnter';
+  sendShortcut?: SendShortcut;
 
   /** Currently selected agent */
   selectedAgent?: SelectedAgent | null;

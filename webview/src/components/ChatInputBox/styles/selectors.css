@@ -208,6 +208,37 @@
 .provider-option-trailing .check-mark {
   margin-left: 0;
 }
+/* Provider switcher: keep its fixed-position menu within short viewports. */
+.provider-dropdown--scrollable {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.provider-option-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Quota details must not displace the row currently under the pointer. */
+.provider-quota-panel {
+  box-sizing: border-box;
+  width: 220px;
+  min-width: 0;
+  overflow-y: auto;
+  white-space: normal;
+  /* Movement toward the list would briefly cover its click targets. */
+  animation: none;
+}
+
+.provider-dropdown [role="menuitemradio"]:focus-visible {
+  outline: 1px solid var(--accent-color);
+  outline-offset: -1px;
+  background: var(--dropdown-hover);
+}
+
 /* Provider switcher: hairline separators between rows */
 .provider-dropdown .selector-option + .selector-option {
   border-top: 1px solid var(--dropdown-border);

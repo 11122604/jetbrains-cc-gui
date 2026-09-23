@@ -1,191 +1,132 @@
-import { useEffect, useRef } from 'react';
-import type { MutableRefObject } from 'react';
+import { useEffect, useEffectEvent, useRef } from 'react';
+import type { SendShortcut } from '../types.js';
+import {
+  catchStrayEnter,
+  claimEnterPress,
+  isEnterKey,
+  isSendKey,
+  releaseEnterKeyUp,
+  releaseEnterPress,
+  triageEnterKeyDown,
+} from '../utils/enterKeyGuard.js';
+import type { EnterKeyRefs } from '../utils/enterKeyGuard.js';
 
 interface CompletionOpenLike {
   isOpen: boolean;
 }
 
-export interface UseNativeEventCaptureOptions {
+export interface UseNativeEventCaptureOptions extends EnterKeyRefs {
   editableRef: React.RefObject<HTMLDivElement | null>;
-  isComposingRef: MutableRefObject<boolean>;
-  lastCompositionEndTimeRef: MutableRefObject<number>;
-  sendShortcut: 'enter' | 'cmdEnter';
+  sendShortcut: SendShortcut;
   fileCompletion: CompletionOpenLike;
   commandCompletion: CompletionOpenLike;
   agentCompletion: CompletionOpenLike;
   promptCompletion: CompletionOpenLike;
   dollarCommandCompletion: CompletionOpenLike;
-  completionSelectedRef: MutableRefObject<boolean>;
-  submittedOnEnterRef: MutableRefObject<boolean>;
   handleSubmit: () => void;
   handleEnhancePrompt: () => void;
+  handleCompositionEnd: () => void;
+}
+
+function isAnyCompletionOpen(options: UseNativeEventCaptureOptions): boolean {
+  return (
+    options.fileCompletion.isOpen ||
+    options.commandCompletion.isOpen ||
+    options.agentCompletion.isOpen ||
+    options.promptCompletion.isOpen ||
+    options.dollarCommandCompletion.isOpen
+  );
 }
 
 /**
  * useNativeEventCapture - Native event capture for JCEF/IME edge cases
  *
- * Uses capturing listeners to handle:
- * - IME confirm enter false trigger
- * - beforeinput insertParagraph handling (Enter-to-send mode)
+ * Capturing listeners run before React's delegated handlers, so this layer
+ * speaks for Enter first and useKeyboardHandler skips anything already
+ * `defaultPrevented`. It also covers:
+ * - beforeinput insertParagraph that JCEF delivers without a keydown (Enter-to-send mode)
  * - prompt enhancer shortcut (Cmd+/)
  */
-export function useNativeEventCapture({
-  editableRef,
-  isComposingRef,
-  lastCompositionEndTimeRef,
-  sendShortcut,
-  fileCompletion,
-  commandCompletion,
-  agentCompletion,
-  promptCompletion,
-  dollarCommandCompletion,
-  completionSelectedRef,
-  submittedOnEnterRef,
-  handleSubmit,
-  handleEnhancePrompt,
-}: UseNativeEventCaptureOptions): void {
-  // Keep latest values without re-subscribing native listeners on every render.
-  const latestRef = useRef<UseNativeEventCaptureOptions>({
-    editableRef,
-    isComposingRef,
-    lastCompositionEndTimeRef,
-    sendShortcut,
-    fileCompletion,
-    commandCompletion,
-    agentCompletion,
-    promptCompletion,
-    dollarCommandCompletion,
-    completionSelectedRef,
-    submittedOnEnterRef,
-    handleSubmit,
-    handleEnhancePrompt,
+export function useNativeEventCapture(options: UseNativeEventCaptureOptions): void {
+  const { editableRef, sendShortcut, handleSubmit, handleEnhancePrompt } = options;
+  const enterWasComposingRef = useRef(false);
+
+  // Effect Events only swap their implementation on commit, so the listeners
+  // below stay subscribed for the element's lifetime yet never act on props
+  // from a render that was interrupted or suspended.
+  const onNativeKeyDown = useEffectEvent((ev: KeyboardEvent) => {
+    if (ev.key === '/' && ev.metaKey && !ev.shiftKey && !ev.altKey) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      handleEnhancePrompt();
+      return;
+    }
+
+    // NOTE: We intentionally do NOT set isComposingRef here based on keyCode 229.
+    // IME composing state is managed exclusively by compositionStart/End events.
+    // In JCEF, keyCode 229 is reported for ALL keys while the Korean IME is active,
+    // including space, which is not an actual composition. Setting isComposingRef=true
+    // here without a corresponding compositionEnd to clear it causes the ref to get
+    // stuck, blocking handleInput and causing cursor jumping on space key.
+    if (!isEnterKey(ev.key, ev.keyCode)) return;
+    if (!ev.repeat) enterWasComposingRef.current = ev.isComposing;
+
+    const verdict = triageEnterKeyDown(ev, ev.isComposing, sendShortcut, options);
+    if (verdict === 'awaitingIme') {
+      // Keep the native candidate confirmation, but don't let React reclassify
+      // this same press if the composition guard expires during propagation.
+      ev.stopPropagation();
+      return;
+    }
+    if (verdict === 'swallowed') return;
+    // Open completion menus read Enter through the React handler.
+    if (isAnyCompletionOpen(options) || !isSendKey(sendShortcut, ev)) return;
+
+    claimEnterPress(ev, options);
+    handleSubmit();
   });
-  useEffect(() => {
-    latestRef.current = {
-      editableRef,
-      isComposingRef,
-      lastCompositionEndTimeRef,
-      sendShortcut,
-      fileCompletion,
-      commandCompletion,
-      agentCompletion,
-      promptCompletion,
-      dollarCommandCompletion,
-      completionSelectedRef,
-      submittedOnEnterRef,
-      handleSubmit,
-      handleEnhancePrompt,
-    };
+
+  const onNativeKeyUp = useEffectEvent((ev: KeyboardEvent) => {
+    if (!isEnterKey(ev.key, ev.keyCode)) return;
+    enterWasComposingRef.current = false;
+    releaseEnterKeyUp(ev, sendShortcut, options);
+  });
+
+  const onNativeBeforeInput = useEffectEvent((ev: InputEvent) => {
+    catchStrayEnter(ev, sendShortcut, options, isAnyCompletionOpen(options), handleSubmit);
+    if (
+      ev.inputType === 'insertParagraph' &&
+      options.isComposingRef.current &&
+      !ev.isComposing &&
+      !enterWasComposingRef.current
+    ) {
+      // Chromium can emit a non-composing paragraph during an IME-owned Enter.
+      // Only recover a lost compositionend when neither event signals composition.
+      options.handleCompositionEnd();
+    }
+  });
+
+  // Focus can leave the editor before Enter's keyup arrives (a dialog opened by
+  // the send, an IDE shortcut); the press must not stay spoken for.
+  const onBlur = useEffectEvent(() => {
+    enterWasComposingRef.current = false;
+    releaseEnterPress(options);
   });
 
   useEffect(() => {
     const el = editableRef.current;
     if (!el) return;
 
-    const nativeKeyDown = (ev: KeyboardEvent) => {
-      const latest = latestRef.current;
-
-      // NOTE: We intentionally do NOT set isComposingRef here based on keyCode 229.
-      // IME composing state is managed exclusively by compositionStart/End events.
-      // In JCEF, keyCode 229 is reported for ALL keys while the Korean IME is active,
-      // including space, which is not an actual composition. Setting isComposingRef=true
-      // here without a corresponding compositionEnd to clear it causes the ref to get
-      // stuck, blocking handleInput and causing cursor jumping on space key.
-
-      const isEnterKey = ev.key === 'Enter' || ev.keyCode === 13;
-
-      if (ev.key === '/' && ev.metaKey && !ev.shiftKey && !ev.altKey) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        latest.handleEnhancePrompt();
-        return;
-      }
-
-      const isMacCursorMovementOrDelete =
-        (ev.key === 'ArrowLeft' && ev.metaKey) ||
-        (ev.key === 'ArrowRight' && ev.metaKey) ||
-        (ev.key === 'ArrowUp' && ev.metaKey) ||
-        (ev.key === 'ArrowDown' && ev.metaKey) ||
-        (ev.key === 'Backspace' && ev.metaKey);
-      if (isMacCursorMovementOrDelete) return;
-
-      const isCursorMovementKey =
-        ev.key === 'Home' ||
-        ev.key === 'End' ||
-        ((ev.key === 'a' || ev.key === 'A') && ev.ctrlKey && !ev.metaKey) ||
-        ((ev.key === 'e' || ev.key === 'E') && ev.ctrlKey && !ev.metaKey);
-      if (isCursorMovementKey) return;
-
-      if (latest.fileCompletion.isOpen || latest.commandCompletion.isOpen || latest.agentCompletion.isOpen || latest.promptCompletion.isOpen || latest.dollarCommandCompletion.isOpen) {
-        return;
-      }
-
-      const isRecentlyComposing = Date.now() - latest.lastCompositionEndTimeRef.current < 100;
-      const shift = (ev as KeyboardEvent).shiftKey === true;
-      const metaOrCtrl = ev.metaKey || ev.ctrlKey;
-      const isSendKey =
-        latest.sendShortcut === 'cmdEnter'
-          ? isEnterKey && metaOrCtrl && !latest.isComposingRef.current
-          : isEnterKey &&
-            !shift &&
-            !latest.isComposingRef.current &&
-            !isRecentlyComposing;
-
-      if (!isSendKey) return;
-
-      ev.preventDefault();
-      latest.submittedOnEnterRef.current = true;
-      latest.handleSubmit();
-    };
-
-    const nativeKeyUp = (ev: KeyboardEvent) => {
-      const latest = latestRef.current;
-      const isEnterKey = ev.key === 'Enter' || ev.keyCode === 13;
-      const shift = (ev as KeyboardEvent).shiftKey === true;
-      const metaOrCtrl = ev.metaKey || ev.ctrlKey;
-
-      const isSendKey =
-        latest.sendShortcut === 'cmdEnter' ? isEnterKey && metaOrCtrl : isEnterKey && !shift;
-      if (!isSendKey) return;
-
-      ev.preventDefault();
-      if (latest.completionSelectedRef.current) {
-        latest.completionSelectedRef.current = false;
-        return;
-      }
-      if (latest.submittedOnEnterRef.current) {
-        latest.submittedOnEnterRef.current = false;
-      }
-    };
-
-    const nativeBeforeInput = (ev: InputEvent) => {
-      const latest = latestRef.current;
-      const type = (ev as InputEvent).inputType;
-      if (type !== 'insertParagraph') return;
-
-      if (latest.sendShortcut === 'cmdEnter') return;
-
-      ev.preventDefault();
-      if (latest.completionSelectedRef.current) {
-        latest.completionSelectedRef.current = false;
-        return;
-      }
-      if (latest.fileCompletion.isOpen || latest.commandCompletion.isOpen || latest.agentCompletion.isOpen || latest.promptCompletion.isOpen || latest.dollarCommandCompletion.isOpen) {
-        return;
-      }
-      latest.handleSubmit();
-    };
-
-    el.addEventListener('keydown', nativeKeyDown, { capture: true });
-    el.addEventListener('keyup', nativeKeyUp, { capture: true });
-    el.addEventListener('beforeinput', nativeBeforeInput as EventListener, { capture: true });
+    el.addEventListener('keydown', onNativeKeyDown, { capture: true });
+    el.addEventListener('keyup', onNativeKeyUp, { capture: true });
+    el.addEventListener('beforeinput', onNativeBeforeInput as EventListener, { capture: true });
+    el.addEventListener('blur', onBlur);
 
     return () => {
-      el.removeEventListener('keydown', nativeKeyDown, { capture: true });
-      el.removeEventListener('keyup', nativeKeyUp, { capture: true });
-      el.removeEventListener('beforeinput', nativeBeforeInput as EventListener, { capture: true });
+      el.removeEventListener('keydown', onNativeKeyDown, { capture: true });
+      el.removeEventListener('keyup', onNativeKeyUp, { capture: true });
+      el.removeEventListener('beforeinput', onNativeBeforeInput as EventListener, { capture: true });
+      el.removeEventListener('blur', onBlur);
     };
-  }, [
-    editableRef,
-  ]);
+  }, [editableRef]);
 }
