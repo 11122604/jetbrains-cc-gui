@@ -1594,9 +1594,13 @@
         "label": "Sonnet 5",
         "description": "Sonnet 5 · Modèle recommandé par défaut"
       },
+      "opus55": {
+        "label": "Opus 5.5",
+        "description": "Opus 5.5 · Dernière évolution d’Opus"
+      },
       "opus5": {
         "label": "Opus 5",
-        "description": "Opus 5 · Dernière évolution d’Opus"
+        "description": "Opus 5 · Génération Opus précédente"
       },
       "opus46_1m": {
         "label": "Opus 4.6",
@@ -1626,6 +1630,10 @@
         "label": "GPT-6 Astra",
         "description": "Vaisseau amiral de nouvelle génération pour l'utilisation autonome de l'ordinateur et les longues tâches agentiques."
       },
+      "gpt6sol": {
+        "label": "GPT-6 Sol",
+        "description": "Modèle frontier GPT-6 pour les travaux professionnels complexes."
+      },
       "gpt56sol": {
         "label": "GPT-5.6 Sol",
         "description": "Modèle frontier pour les travaux professionnels complexes."
@@ -1633,6 +1641,10 @@
       "gpt56terra": {
         "label": "GPT-5.6 Terra",
         "description": "Modèle GPT-5.6 qui équilibre intelligence et coût."
+      },
+      "gpt6luna": {
+        "label": "GPT-6 Luna",
+        "description": "Modèle GPT-6 optimisé pour les charges de travail sensibles aux coûts."
       },
       "gpt56luna": {
         "label": "GPT-5.6 Luna",

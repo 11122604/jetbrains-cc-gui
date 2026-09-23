@@ -28,8 +28,10 @@ public final class CodexPricingTable {
             Map.entry("gpt-5.4", new CodexPricing(2.5, 15.0, 0.25)),
             Map.entry("gpt-5.4-mini", new CodexPricing(0.75, 4.5, 0.075)),
             Map.entry("gpt-6-astra", new CodexPricing(10.0, 50.0, 1.0)),
+            Map.entry("gpt-6-sol", new CodexPricing(2.0, 10.0, 0.2)),
             Map.entry("gpt-5.6-sol", new CodexPricing(5.0, 30.0, 0.5)),
             Map.entry("gpt-5.6-terra", new CodexPricing(2.5, 15.0, 0.25)),
+            Map.entry("gpt-6-luna", new CodexPricing(0.1, 0.5, 0.01)),
             Map.entry("gpt-5.6-luna", new CodexPricing(1.0, 6.0, 0.1))
     );
     private static final Map<String, String> MODEL_ALIASES = Map.of(
@@ -40,6 +42,8 @@ public final class CodexPricingTable {
     );
     private static final List<String> MODEL_PREFIXES = List.of(
             "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
             "gpt-6",
             "gpt-5.6-terra",
             "gpt-5.6-sol",

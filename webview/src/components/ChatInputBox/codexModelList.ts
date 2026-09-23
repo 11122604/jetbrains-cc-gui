@@ -7,7 +7,8 @@ import type { ModelInfo } from './types';
  *  1. Plugin custom models (settings / localStorage)
  *  2. Dynamic catalog from `get_cli_models` (config.toml `model` +
  *     `model_catalog_json`; backend pins the config default first)
- *  3. Built-in `CODEX_MODELS` fallback (Sol / Terra / Luna / 5.5 / 5.4)
+ *  3. Built-in `CODEX_MODELS` fallback (GPT-6 Astra / Sol / Luna, 5.6 Sol
+ *     / Terra / Luna, 5.5)
  *
  * Always keep built-ins so custom providers that only surface a single default
  * (e.g. `model = "gpt-5.5"`) still expose the full static lineup, while catalog

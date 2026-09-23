@@ -19,6 +19,7 @@ public final class ClaudePricingTable {
     private static final ClaudePricing TIERED_SONNET_PRICING = new ClaudePricing(3.0, 15.0, 3.75, 0.30, 6.0, 22.5, 7.5, 0.60);
     private static final ClaudePricing LEGACY_OPUS_PRICING = new ClaudePricing(15.0, 75.0, 18.75, 1.50);
     private static final ClaudePricing OPUS_4_5_PRICING = new ClaudePricing(5.0, 25.0, 6.25, 0.50);
+    private static final ClaudePricing OPUS_5_5_PRICING = new ClaudePricing(4.0, 20.0, 5.0, 0.40);
     private static final ClaudePricing FABLE_5_PRICING = new ClaudePricing(10.0, 50.0, 12.5, 1.0);
     private static final ClaudePricing HAIKU_4_5_PRICING = new ClaudePricing(1.0, 5.0, 1.25, 0.10);
 
@@ -30,6 +31,7 @@ public final class ClaudePricingTable {
             Map.entry("claude-opus-4-6", OPUS_4_5_PRICING),
             Map.entry("claude-opus-4-7", OPUS_4_5_PRICING),
             Map.entry("claude-opus-4-8", OPUS_4_5_PRICING),
+            Map.entry("claude-opus-5-5", OPUS_5_5_PRICING),
             Map.entry("claude-opus-5", OPUS_4_5_PRICING),
             Map.entry("claude-fable-5-1", FABLE_5_PRICING),
             Map.entry("claude-fable-5", FABLE_5_PRICING),
@@ -45,6 +47,7 @@ public final class ClaudePricingTable {
     private static final List<String> MODEL_PREFIXES = List.of(
             "claude-fable-5-1",
             "claude-fable-5",
+            "claude-opus-5-5",
             "claude-opus-5",
             "claude-opus-4-20250514",
             "claude-opus-4-8",

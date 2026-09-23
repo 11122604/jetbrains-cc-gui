@@ -1623,9 +1623,13 @@
         "label": "Sonnet 5",
         "description": "Sonnet 5 · 預設推薦模型"
       },
+      "opus55": {
+        "label": "Opus 5.5",
+        "description": "Opus 5.5 · Opus 最新升級模型"
+      },
       "opus5": {
         "label": "Opus 5",
-        "description": "Opus 5 · Opus 最新升級模型"
+        "description": "Opus 5 · 保留的前代 Opus 模型"
       },
       "opus46_1m": {
         "label": "Opus 4.6",
@@ -1655,6 +1659,10 @@
         "label": "GPT-6 Astra",
         "description": "新一代旗艦模型，擅長自主電腦操作與長鏈路智慧體任務"
       },
+      "gpt6sol": {
+        "label": "GPT-6 Sol",
+        "description": "面向複雜專業工作的 GPT-6 前沿模型"
+      },
       "gpt56sol": {
         "label": "GPT-5.6 Sol",
         "description": "面向複雜專業工作的前沿模型"
@@ -1662,6 +1670,10 @@
       "gpt56terra": {
         "label": "GPT-5.6 Terra",
         "description": "智慧與成本兼顧的 GPT-5.6 模型"
+      },
+      "gpt6luna": {
+        "label": "GPT-6 Luna",
+        "description": "針對成本敏感場景優化的 GPT-6 模型"
       },
       "gpt56luna": {
         "label": "GPT-5.6 Luna",
