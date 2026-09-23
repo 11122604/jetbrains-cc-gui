@@ -8,9 +8,8 @@
 import { spawnSync } from 'child_process';
 import { homedir } from 'os';
 import {
-  commonCliBinDirs,
+  buildCliSpawnEnv,
   decodeCliOutput,
-  enrichPathWithBinDirs,
   resolveCliSpawn,
   resolvePiCliPath,
 } from '../../utils/cli-path.js';
@@ -71,8 +70,7 @@ export function pickParseSource(stdout, stderr) {
  */
 export function listModels() {
   const bin = resolvePiCliPath();
-  const env = { ...process.env };
-  enrichPathWithBinDirs(env, commonCliBinDirs(homedir()));
+  const env = buildCliSpawnEnv(bin, homedir());
 
   let result;
   try {

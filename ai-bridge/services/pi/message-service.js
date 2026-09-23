@@ -21,7 +21,7 @@
  */
 
 import { homedir } from 'os';
-import { resolvePiCliPath, enrichPathWithBinDirs, commonCliBinDirs } from '../../utils/cli-path.js';
+import { resolvePiCliPath, buildCliSpawnEnv } from '../../utils/cli-path.js';
 import { runCliStreaming } from '../../utils/cli-spawn.js';
 import {
   beginStream,
@@ -154,9 +154,8 @@ export async function sendMessage(
   logDebug('spawn', bin, args.slice(0, -1).join(' '),
     `promptLen=${String(promptText || '').length}`);
 
-  const env = { ...process.env };
   const home = process.env.HOME || process.env.USERPROFILE || homedir();
-  enrichPathWithBinDirs(env, commonCliBinDirs(home));
+  const env = buildCliSpawnEnv(bin, home);
 
   const workCwd = cwd && cwd !== 'undefined' && cwd !== 'null' ? cwd : process.cwd();
 
