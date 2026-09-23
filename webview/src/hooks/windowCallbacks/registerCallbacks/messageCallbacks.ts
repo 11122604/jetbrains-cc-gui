@@ -142,14 +142,14 @@ export function registerMessageCallbacks(
   // Stored on `window` so that if registerMessageCallbacks is called again
   // (e.g., HMR, parent re-render), the previous pending timer is cancelled
   // first — preventing stale closures from executing.
-  if (window.__pendingUpdateRaf != null) {
-    clearTimeout(window.__pendingUpdateRaf);
-    window.__pendingUpdateRaf = null;
+  if (window.__pendingUpdateTimer != null) {
+    clearTimeout(window.__pendingUpdateTimer);
+    window.__pendingUpdateTimer = null;
     window.__pendingUpdateJson = null;
     window.__pendingUpdateSequence = null;
   }
   let pendingUpdateJson: string | null = null;
-  let pendingUpdateRaf: number | null = null;
+  let pendingUpdateTimer: number | null = null;
   let pendingUpdateSequence: number | null = null;
   const pendingCodexHistoryPages = new Map<string, {
     sessionId: string;
@@ -176,17 +176,17 @@ export function registerMessageCallbacks(
     addToast(message, 'error');
   };
 
-  // Expose a cancellation function so onStreamEnd can cancel stale rAF-deferred
+  // Expose a cancellation function so onStreamEnd can cancel stale timer-deferred
   // updateMessages calls, preventing them from overwriting the final state after
   // streaming refs are cleared.
   const cancelPendingUpdateMessages = () => {
-    if (pendingUpdateRaf !== null) {
-      clearTimeout(pendingUpdateRaf);
+    if (pendingUpdateTimer !== null) {
+      clearTimeout(pendingUpdateTimer);
     }
-    pendingUpdateRaf = null;
+    pendingUpdateTimer = null;
     pendingUpdateJson = null;
     pendingUpdateSequence = null;
-    window.__pendingUpdateRaf = null;
+    window.__pendingUpdateTimer = null;
     window.__pendingUpdateJson = null;
     window.__pendingUpdateSequence = null;
     window.__streamingDeltaRenderDeferred = false;
@@ -230,7 +230,7 @@ export function registerMessageCallbacks(
 
   const processUpdateMessages = (json: string, sequence: number | null = null) => {
     // Re-check the session-transition guard inside processUpdateMessages so the
-    // rAF-deferred path (window.updateMessages → setTimeout → processUpdateMessages)
+    // timer-deferred path (window.updateMessages → setTimeout → processUpdateMessages)
     // cannot resurrect cleared messages when a transition starts between the
     // entry-point check and the deferred fire. This also catches synchronous
     // callers that bypass the entry point — addHistoryMessage / addUserMessage
@@ -589,27 +589,27 @@ export function registerMessageCallbacks(
       window.__lastStreamActivityAt = Date.now();
     }
 
-    // During streaming, coalesce rapid updateMessages calls into one-per-frame.
-    // The backend coalescer may push every 50ms; JSON.parse of large payloads
-    // (100KB+ for long conversations) blocks the main thread and causes dropped
-    // frames ("fake freeze"). Deferring to rAF ensures we only parse the latest
-    // payload and yield to the browser between frames.
+    // During streaming, coalesce rapid updateMessages calls into one per ~16ms
+    // timer. The backend coalescer may push every 50ms; JSON.parse of large
+    // payloads (100KB+ for long conversations) blocks the main thread and
+    // causes dropped frames ("fake freeze"). Deferring to a short timer ensures
+    // we only parse the latest payload and yield to the browser between renders.
     if (isStreamingRef.current) {
       pendingUpdateJson = json;
       pendingUpdateSequence = sequence;
       window.__pendingUpdateJson = json;
       window.__pendingUpdateSequence = sequence;
-      if (pendingUpdateRaf === null) {
+      if (pendingUpdateTimer === null) {
         const timerId = setTimeout(() => {
-          pendingUpdateRaf = null;
-          window.__pendingUpdateRaf = null;
+          pendingUpdateTimer = null;
+          window.__pendingUpdateTimer = null;
           const latestJson = pendingUpdateJson;
           const latestSequence = pendingUpdateSequence;
           pendingUpdateJson = null;
           pendingUpdateSequence = null;
           window.__pendingUpdateJson = null;
           window.__pendingUpdateSequence = null;
-          // A session transition may have begun while this frame was buffered.
+          // A session transition may have begun while this update was buffered.
           // processUpdateMessages re-checks the transition guard and stashes
           // when needed; do not drop the payload entirely.
           if (latestJson) {
@@ -617,8 +617,8 @@ export function registerMessageCallbacks(
           }
           window.__flushDeferredStreamingRenders?.();
         }, 16);
-        pendingUpdateRaf = timerId as unknown as number;
-        window.__pendingUpdateRaf = timerId as unknown as number;
+        pendingUpdateTimer = timerId as unknown as number;
+        window.__pendingUpdateTimer = timerId as unknown as number;
       }
       return;
     }
@@ -797,12 +797,12 @@ export function registerMessageCallbacks(
     }
     // Cancel any pending deferred updateMessages to prevent stale data from
     // being applied after messages are cleared.
-    if (pendingUpdateRaf !== null) {
-      clearTimeout(pendingUpdateRaf);
-      pendingUpdateRaf = null;
+    if (pendingUpdateTimer !== null) {
+      clearTimeout(pendingUpdateTimer);
+      pendingUpdateTimer = null;
       pendingUpdateJson = null;
       pendingUpdateSequence = null;
-      window.__pendingUpdateRaf = null;
+      window.__pendingUpdateTimer = null;
       window.__pendingUpdateJson = null;
       window.__pendingUpdateSequence = null;
     }

@@ -897,10 +897,10 @@ interface Window {
 
   /**
    * Pending timer handle and JSON for deferred updateMessages processing during
-   * streaming (historical "rAF" naming). Stored on window so re-registration of
-   * message callbacks cancels stale timers.
+   * streaming. Stored on window so re-registration of message callbacks cancels
+   * stale timers.
    */
-  __pendingUpdateRaf?: number | null;
+  __pendingUpdateTimer?: number | null;
   __pendingUpdateJson?: string | null;
   __pendingUpdateSequence?: number | null;
   /** Deltas arrived while a structural snapshot was pending; rendering resumes after it applies. */

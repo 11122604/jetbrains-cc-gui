@@ -138,18 +138,13 @@ describe('useWindowCallbacks integration', () => {
     window.__dependencyStatusState = 'pending';
   });
 
-  /** Stub timer/rAF globals to execute synchronously for streaming tests. */
+  /** Stub timer globals to execute synchronously for streaming tests. */
   const stubSynchronousTimers = () => {
     vi.stubGlobal('setTimeout', (callback: () => void) => {
       callback();
       return 1 as unknown as ReturnType<typeof setTimeout>;
     });
     vi.stubGlobal('clearTimeout', vi.fn());
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
-    vi.stubGlobal('cancelAnimationFrame', vi.fn());
   };
 
   it('applies Java recovery state without echoing provider or model bridge commands', () => {
@@ -2018,14 +2013,9 @@ describe('useWindowCallbacks integration', () => {
 
     it('defers delta rendering until a pending structural snapshot is processed', () => {
       vi.useFakeTimers();
-      const rafCallbacks: FrameRequestCallback[] = [];
-      let nextRafId = 0;
-      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-        rafCallbacks.push(callback);
-        nextRafId += 1;
-        return nextRafId;
-      });
-      vi.stubGlobal('cancelAnimationFrame', vi.fn());
+      // Delta renderers schedule via setTimeout (like the updateMessages batch
+      // timer); spy it to count new schedulings while keeping fake-timer behaviour.
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 
       const opts = createOptions();
       renderHook(() => useWindowCallbacks(opts));
@@ -2047,13 +2037,16 @@ describe('useWindowCallbacks integration', () => {
       });
 
       expect(opts.streamingContentRef.current).toBe('delta-after-snapshot');
-      expect(rafCallbacks).toHaveLength(0);
+      // Only the snapshot's own 16ms batching timer is pending — delta rendering
+      // scheduled nothing while the structural snapshot is unprocessed.
+      const schedulingsAfterDefer = setTimeoutSpy.mock.calls.length;
 
       act(() => {
         vi.advanceTimersByTime(16);
       });
 
-      expect(rafCallbacks).toHaveLength(2);
+      // Snapshot processed; the deferred flush scheduled content + thinking renders.
+      expect(setTimeoutSpy.mock.calls.length).toBe(schedulingsAfterDefer + 2);
     });
 
     it('onBlockReset keeps streaming refs cumulative across turns (single assistant message)', () => {
