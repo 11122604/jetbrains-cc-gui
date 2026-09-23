@@ -1,11 +1,20 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { HistoryData } from '../types';
 
+/** CLI-derived title pushed with a Claude history page load, keyed by session. */
+export interface RestoredSessionTitle {
+  sessionId: string;
+  title: string;
+}
+
 export interface SessionContextValue {
   currentSessionId: string | null;
   setCurrentSessionId: React.Dispatch<React.SetStateAction<string | null>>;
   customSessionTitle: string | null;
   setCustomSessionTitle: React.Dispatch<React.SetStateAction<string | null>>;
+  /** Keyed stale entries self-invalidate on session switch; no reset plumbing needed. */
+  restoredSessionTitle: RestoredSessionTitle | null;
+  setRestoredSessionTitle: React.Dispatch<React.SetStateAction<RestoredSessionTitle | null>>;
   historyData: HistoryData | null;
   setHistoryData: React.Dispatch<React.SetStateAction<HistoryData | null>>;
   /** Stale-closure guard: always reflects latest currentSessionId without triggering re-render. */
@@ -25,6 +34,7 @@ const SessionContext = createContext<SessionContextValue | null>(null);
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [customSessionTitle, setCustomSessionTitle] = useState<string | null>(null);
+  const [restoredSessionTitle, setRestoredSessionTitle] = useState<RestoredSessionTitle | null>(null);
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
 
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
@@ -39,12 +49,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setCurrentSessionId,
       customSessionTitle,
       setCustomSessionTitle,
+      restoredSessionTitle,
+      setRestoredSessionTitle,
       historyData,
       setHistoryData,
       currentSessionIdRef,
       customSessionTitleRef,
     }),
-    [currentSessionId, customSessionTitle, historyData],
+    [currentSessionId, customSessionTitle, restoredSessionTitle, historyData],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

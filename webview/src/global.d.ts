@@ -129,6 +129,22 @@ interface Window {
     cursorReset?: boolean;
   };
 
+  // Claude history pagination callbacks
+  claudeHistoryPageInfo?: (json: string) => void;
+  claudeHistoryPageError?: (json: string) => void;
+  /** Cached Claude pagination state so a remounted MessageList can restore it. */
+  __claudeHistoryPageInfo?: {
+    pageId: string;
+    sessionId: string;
+    mode: 'replace' | 'prepend';
+    fromTurn: number;
+    toTurn: number;
+    totalTurns: number;
+    hasMore: boolean;
+    loadedMessageCount: number;
+    cursorReset?: boolean;
+  };
+
   /**
    * History load complete callback - invoked when history messages finish loading.
    * Triggers Markdown re-rendering to fix incorrect rendering on first history load.
@@ -881,10 +897,10 @@ interface Window {
 
   /**
    * Pending timer handle and JSON for deferred updateMessages processing during
-   * streaming (historical "rAF" naming). Stored on window so re-registration of
-   * message callbacks cancels stale timers.
+   * streaming. Stored on window so re-registration of message callbacks cancels
+   * stale timers.
    */
-  __pendingUpdateRaf?: number | null;
+  __pendingUpdateTimer?: number | null;
   __pendingUpdateJson?: string | null;
   __pendingUpdateSequence?: number | null;
   /** Deltas arrived while a structural snapshot was pending; rendering resumes after it applies. */

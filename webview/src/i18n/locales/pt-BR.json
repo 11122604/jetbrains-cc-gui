@@ -1744,9 +1744,13 @@
         "label": "Sonnet 5",
         "description": "Sonnet 5 · Usar o modelo padrão"
       },
+      "opus55": {
+        "label": "Opus 5.5",
+        "description": "Opus 5.5 · Upgrade mais recente do Opus"
+      },
       "opus5": {
         "label": "Opus 5",
-        "description": "Opus 5 · Upgrade mais recente do Opus"
+        "description": "Opus 5 · Geração anterior do Opus"
       },
       "opus46_1m": {
         "label": "Opus 4.6",
@@ -1776,6 +1780,10 @@
         "label": "GPT-6 Astra",
         "description": "Flagship de nova geração para uso autônomo do computador e tarefas agênticas longas."
       },
+      "gpt6sol": {
+        "label": "GPT-6 Sol",
+        "description": "Modelo de fronteira GPT-6 para trabalho profissional complexo."
+      },
       "gpt56sol": {
         "label": "GPT-5.6 Sol",
         "description": "Modelo de fronteira para trabalho profissional complexo."
@@ -1783,6 +1791,10 @@
       "gpt56terra": {
         "label": "GPT-5.6 Terra",
         "description": "Modelo GPT-5.6 que equilibra inteligência e custo."
+      },
+      "gpt6luna": {
+        "label": "GPT-6 Luna",
+        "description": "Modelo GPT-6 otimizado para cargas de trabalho sensíveis a custo."
       },
       "gpt56luna": {
         "label": "GPT-5.6 Luna",

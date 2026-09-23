@@ -1,5 +1,5 @@
 import { useImperativeHandle } from 'react';
-import type { ForwardedRef, MutableRefObject } from 'react';
+import type { ForwardedRef } from 'react';
 import type { ChatInputBoxHandle, FileTagInfo } from '../types.js';
 
 export interface UseChatInputImperativeHandleOptions {
@@ -7,7 +7,7 @@ export interface UseChatInputImperativeHandleOptions {
   editableRef: React.RefObject<HTMLDivElement | null>;
   getTextContent: () => string;
   invalidateCache: () => void;
-  isExternalUpdateRef: MutableRefObject<boolean>;
+  cancelPendingInput: () => void;
   setHasContent: (hasContent: boolean) => void;
   adjustHeight: () => void;
   focusInput: () => void;
@@ -26,7 +26,7 @@ export function useChatInputImperativeHandle({
   editableRef,
   getTextContent,
   invalidateCache,
-  isExternalUpdateRef,
+  cancelPendingInput,
   setHasContent,
   adjustHeight,
   focusInput,
@@ -43,7 +43,7 @@ export function useChatInputImperativeHandle({
       },
       setValue: (newValue: string) => {
         if (!editableRef.current) return;
-        isExternalUpdateRef.current = true;
+        cancelPendingInput();
         editableRef.current.innerText = newValue;
         setHasContent(!!newValue.trim());
         adjustHeight();
@@ -68,8 +68,8 @@ export function useChatInputImperativeHandle({
     [
       getTextContent,
       invalidateCache,
+      cancelPendingInput,
       editableRef,
-      isExternalUpdateRef,
       setHasContent,
       adjustHeight,
       focusInput,

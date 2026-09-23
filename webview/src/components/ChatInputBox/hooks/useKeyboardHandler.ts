@@ -1,5 +1,15 @@
-import { useCallback } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject } from 'react';
+import { useCallback, useMemo } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { SendShortcut } from '../types.js';
+import {
+  claimEnterPress,
+  isEnterKey,
+  isImeStillComposing,
+  isSendKey,
+  releaseEnterKeyUp,
+  triageEnterKeyDown,
+} from '../utils/enterKeyGuard.js';
+import type { EnterKeyRefs } from '../utils/enterKeyGuard.js';
 
 interface CompletionWithKeyDown {
   isOpen: boolean;
@@ -10,12 +20,8 @@ interface InlineCompletionHandler {
   applySuggestion: () => boolean;
 }
 
-export interface UseKeyboardHandlerOptions {
-  isComposingRef: MutableRefObject<boolean>;
-  lastCompositionEndTimeRef: MutableRefObject<number>;
-  sendShortcut: 'enter' | 'cmdEnter';
-  sdkStatusLoading: boolean;
-  sdkInstalled: boolean;
+export interface UseKeyboardHandlerOptions extends EnterKeyRefs {
+  sendShortcut: SendShortcut;
   fileCompletion: CompletionWithKeyDown;
   commandCompletion: CompletionWithKeyDown;
   agentCompletion: CompletionWithKeyDown;
@@ -33,8 +39,6 @@ export interface UseKeyboardHandlerOptions {
   }) => boolean;
   /** Inline history completion (Tab to apply) */
   inlineCompletion?: InlineCompletionHandler;
-  completionSelectedRef: MutableRefObject<boolean>;
-  submittedOnEnterRef: MutableRefObject<boolean>;
   handleSubmit: () => void;
 }
 
@@ -44,15 +48,13 @@ export interface UseKeyboardHandlerOptions {
  * Handles:
  * - Completion dropdown navigation
  * - History navigation (when input empty)
- * - Send shortcut (Enter / Cmd+Enter)
+ * - Send shortcut (Enter / Cmd+Enter) when native capture did not already send
  * - Preventing IME "confirm enter" false send
  */
 export function useKeyboardHandler({
   isComposingRef,
   lastCompositionEndTimeRef,
   sendShortcut,
-  sdkStatusLoading,
-  sdkInstalled,
   fileCompletion,
   commandCompletion,
   agentCompletion,
@@ -65,12 +67,28 @@ export function useKeyboardHandler({
   submittedOnEnterRef,
   handleSubmit,
 }: UseKeyboardHandlerOptions) {
+  const enterKeyRefs = useMemo<EnterKeyRefs>(
+    () => ({ submittedOnEnterRef, completionSelectedRef, isComposingRef, lastCompositionEndTimeRef }),
+    [submittedOnEnterRef, completionSelectedRef, isComposingRef, lastCompositionEndTimeRef]
+  );
+
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      const isIMEComposing = isComposingRef.current || e.nativeEvent.isComposing;
-
-      const isEnterKey =
-        e.key === 'Enter' || e.nativeEvent.keyCode === 13;
+      const enterKey = isEnterKey(e.key, e.nativeEvent.keyCode);
+      if (enterKey) {
+        // Native capture is a JCEF compatibility path. If it already claimed
+        // this press, React must not send the same message a second time.
+        if (e.defaultPrevented) return;
+        // While the IME may still be confirming its candidate, neither the
+        // completion menus nor the send path may consume the key.
+        const verdict = triageEnterKeyDown(e, e.nativeEvent.isComposing, sendShortcut, enterKeyRefs);
+        if (verdict !== 'open') return;
+      }
+      if (isImeStillComposing(enterKeyRefs, e.nativeEvent.isComposing)) {
+        // Shift+Enter may keep its native newline behavior while composing,
+        // but must not replace the draft through an open completion menu.
+        return;
+      }
 
       if (handleMacCursorMovement(e)) return;
 
@@ -81,54 +99,22 @@ export function useKeyboardHandler({
         ((e.key === 'e' || e.key === 'E') && e.ctrlKey && !e.metaKey);
       if (isCursorMovementKey) return;
 
-      if (fileCompletion.isOpen) {
-        const handled = fileCompletion.handleKeyDown(e.nativeEvent);
-        if (handled) {
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.key === 'Enter') completionSelectedRef.current = true;
-          return;
-        }
-      }
-
-      if (commandCompletion.isOpen) {
-        const handled = commandCompletion.handleKeyDown(e.nativeEvent);
-        if (handled) {
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.key === 'Enter') completionSelectedRef.current = true;
-          return;
-        }
-      }
-
-      if (agentCompletion.isOpen) {
-        const handled = agentCompletion.handleKeyDown(e.nativeEvent);
-        if (handled) {
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.key === 'Enter') completionSelectedRef.current = true;
-          return;
-        }
-      }
-
-      if (promptCompletion.isOpen) {
-        const handled = promptCompletion.handleKeyDown(e.nativeEvent);
-        if (handled) {
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.key === 'Enter') completionSelectedRef.current = true;
-          return;
-        }
-      }
-
-      if (dollarCommandCompletion.isOpen) {
-        const handled = dollarCommandCompletion.handleKeyDown(e.nativeEvent);
-        if (handled) {
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.key === 'Enter') completionSelectedRef.current = true;
-          return;
-        }
+      // Menus are consulted in this order; the first open one that handles
+      // the key owns it. Enter picked an item, so later Enter events of this
+      // press (repeat, beforeinput) must not send.
+      const completions = [
+        fileCompletion,
+        commandCompletion,
+        agentCompletion,
+        promptCompletion,
+        dollarCommandCompletion,
+      ];
+      for (const completion of completions) {
+        if (!completion.isOpen || !completion.handleKeyDown(e.nativeEvent)) continue;
+        e.preventDefault();
+        e.stopPropagation();
+        if (enterKey) completionSelectedRef.current = true;
+        return;
       }
 
       // Handle inline history completion (Tab key)
@@ -143,22 +129,14 @@ export function useKeyboardHandler({
 
       if (handleHistoryKeyDown(e)) return;
 
-      const isRecentlyComposing = Date.now() - lastCompositionEndTimeRef.current < 100;
-      const isSendKey =
-        sendShortcut === 'cmdEnter'
-          ? isEnterKey && (e.metaKey || e.ctrlKey) && !isIMEComposing
-          : isEnterKey && !e.shiftKey && !isIMEComposing && !isRecentlyComposing;
+      if (!enterKey || !isSendKey(sendShortcut, e)) return;
 
-      if (!isSendKey) return;
-
-      e.preventDefault();
-      if (sdkStatusLoading || !sdkInstalled) return;
-
-      submittedOnEnterRef.current = true;
+      // SDK readiness is judged inside handleSubmit so that this fallback path
+      // gives the same toast and install prompt as the native capture path.
+      claimEnterPress(e, enterKeyRefs);
       handleSubmit();
     },
     [
-      isComposingRef,
       handleMacCursorMovement,
       fileCompletion,
       commandCompletion,
@@ -167,11 +145,8 @@ export function useKeyboardHandler({
       dollarCommandCompletion,
       handleHistoryKeyDown,
       inlineCompletion,
-      lastCompositionEndTimeRef,
       sendShortcut,
-      sdkStatusLoading,
-      sdkInstalled,
-      submittedOnEnterRef,
+      enterKeyRefs,
       completionSelectedRef,
       handleSubmit,
     ]
@@ -179,26 +154,10 @@ export function useKeyboardHandler({
 
   const onKeyUp = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      const isEnterKey =
-        e.key === 'Enter' || e.nativeEvent.keyCode === 13;
-
-      const isSendKey =
-        sendShortcut === 'cmdEnter'
-          ? isEnterKey && (e.metaKey || e.ctrlKey)
-          : isEnterKey && !e.shiftKey;
-
-      if (!isSendKey) return;
-      e.preventDefault();
-
-      if (completionSelectedRef.current) {
-        completionSelectedRef.current = false;
-        return;
-      }
-      if (submittedOnEnterRef.current) {
-        submittedOnEnterRef.current = false;
-      }
+      if (!isEnterKey(e.key, e.nativeEvent.keyCode)) return;
+      releaseEnterKeyUp(e, sendShortcut, enterKeyRefs);
     },
-    [sendShortcut, completionSelectedRef, submittedOnEnterRef]
+    [sendShortcut, enterKeyRefs]
   );
 
   return { onKeyDown, onKeyUp };

@@ -127,6 +127,7 @@ export const useAppChatController = ({
   const {
     currentSessionId, setCurrentSessionId,
     customSessionTitle, setCustomSessionTitle,
+    restoredSessionTitle, setRestoredSessionTitle,
     historyData, setHistoryData,
     currentSessionIdRef, customSessionTitleRef,
   } = useSession();
@@ -245,6 +246,7 @@ export const useAppChatController = ({
     closeContextUsageDialog,
     customSessionTitleRef, currentSessionIdRef, updateHistoryTitle, applyHistoryTitleLocal,
     setCustomSessionTitle,
+    setRestoredSessionTitle,
     setPermissionDialogTimeoutSeconds,
     clearQueuedMessages,
   });
@@ -289,6 +291,7 @@ export const useAppChatController = ({
     enqueue: enqueueMessage,
     dequeue: dequeueMessage,
     clearQueue,
+    reorder: reorderMessageQueue,
   } = useMessageQueue({ isLoading: loading, onExecute: executeMessage });
 
   // Point the session-transition indirection at the real clearQueue.
@@ -340,7 +343,8 @@ export const useAppChatController = ({
     fileChangeMgmt,
     filteredFileChanges, subagents, globalTodos, rewindableMessages, sessionTitle,
   } = useChatComputations({
-    t, messages, mergedMessages, subagentHistories, customSessionTitle, streamingActive, currentProvider,
+    t, messages, mergedMessages, subagentHistories, customSessionTitle, restoredSessionTitle,
+    streamingActive, currentProvider,
     currentSessionId, currentSessionIdRef,
     getMessageText, getContentBlocks,
   });
@@ -383,7 +387,7 @@ export const useAppChatController = ({
     chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef,
     // Message actions
     handleUndoFile, onDiscardAll, handleKeepAll,
-    handleSubmit, interruptSession, messageQueue, dequeueMessage,
+    handleSubmit, interruptSession, messageQueue, dequeueMessage, reorderMessageQueue,
     handleOpenRewindSelectDialog, handleNavigateToProviderSettings, wrappedHandleProviderSelect,
     // Session management
     createNewSession, loadHistorySession, deleteHistorySession, deleteHistorySessions,

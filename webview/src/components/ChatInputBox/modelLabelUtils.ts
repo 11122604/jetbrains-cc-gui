@@ -12,6 +12,7 @@ const DEFAULT_MODEL_MAP: Record<string, ModelInfo> = AVAILABLE_MODELS.reduce(
 );
 
 export const MODEL_LABEL_KEYS: Record<string, string> = {
+  'claude-opus-5-5': 'models.claude.opus55.label',
   'claude-opus-5': 'models.claude.opus5.label',
   'claude-sonnet-5': 'models.claude.sonnet5.label',
   'claude-sonnet-4-6': 'models.claude.sonnet46.label',
@@ -21,8 +22,10 @@ export const MODEL_LABEL_KEYS: Record<string, string> = {
   'claude-opus-4-6[1m]': 'models.claude.opus46_1m.label',
   'claude-haiku-4-5': 'models.claude.haiku45.label',
   'gpt-6-astra': 'models.codex.gpt6astra.label',
+  'gpt-6-sol': 'models.codex.gpt6sol.label',
   'gpt-5.6-sol': 'models.codex.gpt56sol.label',
   'gpt-5.6-terra': 'models.codex.gpt56terra.label',
+  'gpt-6-luna': 'models.codex.gpt6luna.label',
   'gpt-5.6-luna': 'models.codex.gpt56luna.label',
   'gpt-5.5': 'models.codex.gpt55.label',
   'gpt-5.4': 'models.codex.gpt54.label',
@@ -32,6 +35,7 @@ export const MODEL_LABEL_KEYS: Record<string, string> = {
 };
 
 export const MODEL_DESCRIPTION_KEYS: Record<string, string> = {
+  'claude-opus-5-5': 'models.claude.opus55.description',
   'claude-opus-5': 'models.claude.opus5.description',
   'claude-sonnet-5': 'models.claude.sonnet5.description',
   'claude-sonnet-4-6': 'models.claude.sonnet46.description',
@@ -41,8 +45,10 @@ export const MODEL_DESCRIPTION_KEYS: Record<string, string> = {
   'claude-opus-4-6[1m]': 'models.claude.opus46_1m.description',
   'claude-haiku-4-5': 'models.claude.haiku45.description',
   'gpt-6-astra': 'models.codex.gpt6astra.description',
+  'gpt-6-sol': 'models.codex.gpt6sol.description',
   'gpt-5.6-sol': 'models.codex.gpt56sol.description',
   'gpt-5.6-terra': 'models.codex.gpt56terra.description',
+  'gpt-6-luna': 'models.codex.gpt6luna.description',
   'gpt-5.6-luna': 'models.codex.gpt56luna.description',
   'gpt-5.5': 'models.codex.gpt55.description',
   'gpt-5.4': 'models.codex.gpt54.description',
@@ -59,6 +65,7 @@ export const MODEL_DESCRIPTION_KEYS: Record<string, string> = {
 export const MODEL_ID_TO_MAPPING_KEY: Record<string, string> = {
   'claude-fable-5-1': 'fable',
   'claude-fable-5': 'fable',
+  'claude-opus-5-5': 'opus',
   'claude-opus-5': 'opus',
   'claude-sonnet-5': 'sonnet',
   'claude-sonnet-4-7': 'sonnet',

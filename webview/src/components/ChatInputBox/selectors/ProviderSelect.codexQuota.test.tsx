@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderSelect } from './ProviderSelect';
 
 vi.mock('../../shared/ProviderModelIcon', () => ({
@@ -33,13 +33,123 @@ describe('ProviderSelect Codex quota submenu', () => {
     window.updateCodexSubscriptionQuota = undefined;
   });
 
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    { width: 393, height: 851, menu: { x: 92, y: 420, width: 200, height: 310 }, minHeight: 120 },
+    { width: 393, height: 365, menu: { x: 8, y: 8, width: 200, height: 300 }, minHeight: 120 },
+    { width: 393, height: 365, menu: { x: 49, y: 8, width: 200, height: 310 }, minHeight: 120 },
+  ])('keeps quota beside the menu without covering its rows in $width × $height', ({ width, height, menu, minHeight }) => {
+    vi.stubGlobal('innerWidth', width);
+    vi.stubGlobal('innerHeight', height);
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('provider-dropdown')
+        ? DOMRect.fromRect(menu) : originalRect.call(this);
+    });
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(238);
+
+    render(<ProviderSelect value="claude" />);
+    fireEvent.click(screen.getByRole('button'), { detail: 1 });
+    fireEvent.mouseEnter(screen.getByRole('menuitemradio', { name: 'Codex' }));
+    const panel = screen.getByRole('tooltip');
+    const left = menu.x + Number.parseFloat(panel.style.left);
+    const top = menu.y + Number.parseFloat(panel.style.top);
+    const panelWidth = Number.parseFloat(panel.style.width);
+    const maxHeight = Number.parseFloat(panel.style.maxHeight);
+    const panelHeight = Math.min(240, maxHeight);
+
+    expect(left).toBeGreaterThanOrEqual(8);
+    expect(left + panelWidth).toBeLessThanOrEqual(width - 8);
+    expect(top).toBeGreaterThanOrEqual(8);
+    expect(top + panelHeight).toBeLessThanOrEqual(height - 8);
+    expect(maxHeight).toBeGreaterThanOrEqual(minHeight);
+    const overlapWidth = Math.min(left + panelWidth, menu.x + menu.width) - Math.max(left, menu.x);
+    const overlapHeight = Math.min(top + panelHeight, menu.y + menu.height) - Math.max(top, menu.y);
+    expect(overlapWidth <= 0 || overlapHeight <= 0).toBe(true);
+  });
+
+  it('only subscribes while quota is visible and requests fresh data on reopening', () => {
+    render(<ProviderSelect value="claude" />);
+    expect(window.updateCodexSubscriptionQuota).toBeUndefined();
+    fireEvent.click(screen.getByRole('button'), { detail: 1 });
+    const codex = screen.getByRole('menuitemradio', { name: 'Codex' });
+    fireEvent.mouseEnter(codex);
+    expect(window.sendToJava).toHaveBeenCalledTimes(1);
+    fireEvent.mouseEnter(codex);
+    expect(window.sendToJava).toHaveBeenCalledTimes(1);
+
+    fireEvent.mouseEnter(screen.getByRole('menuitemradio', { name: 'Claude Code' }));
+    expect(screen.getByRole('tooltip')).toBeTruthy();
+    fireEvent.mouseLeave(document.querySelector('.provider-dropdown')!);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    act(() => {
+      window.updateCodexSubscriptionQuota?.(JSON.stringify({
+        status: 'ok', fetchedAt: 1710000000000,
+        windows: { fiveHour: { remainingPercent: 20 }, weekly: { remainingPercent: 32 } },
+      }));
+    });
+    fireEvent.mouseEnter(codex);
+    expect(window.sendToJava).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('tooltip').textContent).toContain('Loading...');
+    expect(screen.queryByText(/20% remaining/)).toBeNull();
+  });
+
+  it('opens quota with keyboard focus and restores the trigger on Escape or selection', () => {
+    const onChange = vi.fn();
+    render(<ProviderSelect value="claude" onChange={onChange} />);
+    const trigger = screen.getByRole('button');
+    act(() => trigger.focus());
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    const selected = screen.getByRole('menuitemradio', { checked: true });
+    expect(document.activeElement).toBe(selected);
+    fireEvent.keyDown(selected, { key: 'ArrowDown' });
+    const codex = screen.getByRole('menuitemradio', { name: 'Codex' });
+    expect(document.activeElement).toBe(codex);
+    const quota = screen.getByRole('tooltip');
+    expect(codex.getAttribute('aria-describedby')).toBe(quota.id);
+    fireEvent.mouseLeave(document.querySelector('.provider-dropdown')!);
+    expect(screen.getByRole('tooltip')).toBe(quota);
+    fireEvent.keyDown(codex, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.keyDown(screen.getByRole('menuitemradio', { checked: true }), { key: 'ArrowDown' });
+    fireEvent.keyDown(screen.getByRole('menuitemradio', { name: 'Codex' }), { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('codex');
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('keeps quota open and leaves scrolling keys to its focused contents', () => {
+    render(<div tabIndex={0}><ProviderSelect value="claude" /></div>);
+    const trigger = screen.getByRole('button');
+    act(() => trigger.focus());
+    fireEvent.click(trigger, { detail: 1 });
+    fireEvent.mouseEnter(screen.getByRole('menuitemradio', { name: 'Codex' }));
+    const quota = screen.getByRole('tooltip');
+    act(() => quota.focus());
+    expect(document.activeElement).toBe(quota);
+    fireEvent.mouseLeave(document.querySelector('.provider-dropdown')!);
+    expect(screen.getByRole('tooltip')).toBe(quota);
+    expect(fireEvent.keyDown(quota, { key: 'ArrowDown' })).toBe(true);
+    expect(fireEvent.keyDown(quota, { key: 'End' })).toBe(true);
+    expect(document.activeElement).toBe(quota);
+    fireEvent.keyDown(quota, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('shows a submenu for Codex with quota details', async () => {
     render(<ProviderSelect value="claude" />);
 
     fireEvent.click(screen.getByRole('button'));
-    const providerDropdown = document.querySelector('.selector-dropdown') as HTMLElement;
-    // The quota panel is positioned above this dropdown. Setting overflow-x to
-    // hidden also clips vertical overflow, so the panel becomes invisible.
+    const providerDropdown = document.querySelector('.provider-dropdown') as HTMLElement;
     expect(providerDropdown.style.overflowX).toBe('');
     const codexRow = screen.getByText('Codex').closest('.selector-option')!;
     expect(codexRow.querySelector('.codicon-chevron-right')).toBeTruthy();
@@ -87,11 +197,10 @@ describe('ProviderSelect Codex quota submenu', () => {
 
     const submenu = await screen.findByText('Codex quota');
     expect(submenu).toBeTruthy();
-    const codexRowElement = codexRow as HTMLElement;
-    expect(within(codexRowElement).getByText('5h usage')).toBeTruthy();
-    expect(within(codexRowElement).getByText(/20% remaining \u00b7 Resets /)).toBeTruthy();
-    expect(within(codexRowElement).getByText('Weekly usage')).toBeTruthy();
-    expect(within(codexRowElement).getByText(/32% remaining \u00b7 Resets /)).toBeTruthy();
+    expect(within(providerDropdown).getByText('5h usage')).toBeTruthy();
+    expect(within(providerDropdown).getByText(/20% remaining \u00b7 Resets /)).toBeTruthy();
+    expect(within(providerDropdown).getByText('Weekly usage')).toBeTruthy();
+    expect(within(providerDropdown).getByText(/32% remaining \u00b7 Resets /)).toBeTruthy();
     expect(screen.queryByText(/Source:/)).toBeNull();
     expect(screen.queryByText(/Balance refreshed at/)).toBeNull();
   });
@@ -132,9 +241,9 @@ describe('ProviderSelect Codex quota submenu', () => {
       }));
     });
 
-    const codexRowElement = codexRow as HTMLElement;
-    expect(await within(codexRowElement).findByText('Codex quota')).toBeTruthy();
-    expect(within(codexRowElement).getAllByText('Unavailable')).toHaveLength(3);
+    const providerDropdown = document.querySelector('.provider-dropdown') as HTMLElement;
+    expect(await within(providerDropdown).findByText('Codex quota')).toBeTruthy();
+    expect(within(providerDropdown).getAllByText('Unavailable')).toHaveLength(3);
     expect(screen.queryByText('0 used')).toBeNull();
     expect(screen.queryByText(/Resets /)).toBeNull();
   });
@@ -178,11 +287,11 @@ describe('ProviderSelect Codex quota submenu', () => {
       }));
     });
 
-    const codexRowElement = codexRow as HTMLElement;
-    expect(await within(codexRowElement).findByText('Codex quota')).toBeTruthy();
-    expect(within(codexRowElement).getByText('API key mode has no subscription quota')).toBeTruthy();
-    expect(within(codexRowElement).queryByText('5h usage')).toBeNull();
-    expect(within(codexRowElement).queryByText('Weekly usage')).toBeNull();
-    expect(within(codexRowElement).queryByText('Unavailable')).toBeNull();
+    const providerDropdown = document.querySelector('.provider-dropdown') as HTMLElement;
+    expect(await within(providerDropdown).findByText('Codex quota')).toBeTruthy();
+    expect(within(providerDropdown).getByText('API key mode has no subscription quota')).toBeTruthy();
+    expect(within(providerDropdown).queryByText('5h usage')).toBeNull();
+    expect(within(providerDropdown).queryByText('Weekly usage')).toBeNull();
+    expect(within(providerDropdown).queryByText('Unavailable')).toBeNull();
   });
 });

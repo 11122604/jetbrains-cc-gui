@@ -98,6 +98,8 @@ export interface DropdownItemData {
   icon?: string;
   /** Item type */
   type: CompletionType;
+  /** Semantic command content type, used by the Codex picker */
+  contentType?: 'command' | 'skill';
   /** Whether selected (for selectors) */
   checked?: boolean;
   /** Associated data */
@@ -132,6 +134,8 @@ export interface CommandItem {
   description?: string;
   /** Category */
   category?: string;
+  /** Semantic content type used to choose the invocation prefix */
+  contentType?: 'command' | 'skill';
 }
 
 /**
@@ -152,7 +156,7 @@ export interface DropdownPosition {
  * Trigger query information
  */
 export interface TriggerQuery {
-  /** Trigger symbol ('@' or '/' or '#' or '!') */
+  /** Trigger symbol ('@', '/', '#', '!' or '$') */
   trigger: string;
   /** Search keyword */
   query: string;
@@ -378,9 +382,14 @@ export const CLAUDE_MODELS: ModelInfo[] = [
     description: 'Fable 5 · Previous Fable generation',
   },
   {
+    id: 'claude-opus-5-5',
+    label: 'Opus 5.5',
+    description: 'Opus 5.5 · Latest Opus upgrade',
+  },
+  {
     id: 'claude-opus-5',
     label: 'Opus 5',
-    description: 'Opus 5 · Latest Opus upgrade',
+    description: 'Opus 5 · Previous Opus generation',
   },
   {
     id: 'claude-sonnet-5',
@@ -404,6 +413,11 @@ export const CODEX_MODELS: ModelInfo[] = [
     description: 'New-generation flagship for autonomous computer use and long agentic tasks.',
   },
   {
+    id: 'gpt-6-sol',
+    label: 'GPT-6 Sol',
+    description: 'GPT-6 frontier model for complex professional work.',
+  },
+  {
     id: 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
     description: 'Frontier model for complex professional work.',
@@ -414,6 +428,11 @@ export const CODEX_MODELS: ModelInfo[] = [
     description: 'GPT-5.6 model that balances intelligence and cost.',
   },
   {
+    id: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
+    description: 'GPT-6 model optimized for cost-sensitive workloads.',
+  },
+  {
     id: 'gpt-5.6-luna',
     label: 'GPT-5.6 Luna',
     description: 'GPT-5.6 model optimized for cost-sensitive workloads.',
@@ -422,11 +441,6 @@ export const CODEX_MODELS: ModelInfo[] = [
     id: 'gpt-5.5',
     label: 'GPT-5.5',
     description: 'Latest frontier model with stronger capabilities.',
-  },
-  {
-    id: 'gpt-5.4',
-    label: 'GPT-5.4',
-    description: 'Latest frontier model with enhanced capabilities.',
   },
 ];
 
@@ -684,6 +698,7 @@ export const AVAILABLE_PROVIDERS: ProviderInfo[] = [
 export const EFFORT_SUPPORTED_CLAUDE_MODELS = new Set([
   'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-6',
@@ -699,6 +714,7 @@ export const EFFORT_SUPPORTED_CLAUDE_MODELS = new Set([
 export const XHIGH_EFFORT_CLAUDE_MODELS = new Set([
   'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-opus-4-8',
 ]);
@@ -709,6 +725,7 @@ export const XHIGH_EFFORT_CLAUDE_MODELS = new Set([
 export const MAX_EFFORT_CLAUDE_MODELS = new Set([
   'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-6',
@@ -735,6 +752,9 @@ export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
  * Standard uses Codex defaults; Fast maps to service_tier=fast at send time.
  */
 export type CodexFastMode = 'normal' | 'fast';
+
+/** Which key combination sends the message: plain Enter, or Cmd/Ctrl+Enter. */
+export type SendShortcut = 'enter' | 'cmdEnter';
 
 /**
  * Reasoning level information
@@ -905,7 +925,7 @@ export interface ChatInputBoxProps {
   onStreamingEnabledChange?: (enabled: boolean) => void;
 
   /** Send shortcut setting: 'enter' = Enter sends | 'cmdEnter' = Cmd/Ctrl+Enter sends */
-  sendShortcut?: 'enter' | 'cmdEnter';
+  sendShortcut?: SendShortcut;
 
   /** Currently selected agent */
   selectedAgent?: SelectedAgent | null;
@@ -949,6 +969,8 @@ export interface ChatInputBoxProps {
   messageQueue?: QueuedMessage[];
   /** Remove message from queue callback */
   onRemoveFromQueue?: (id: string) => void;
+  /** Reorder message queue callback (orderedIds[0] executes first) */
+  onReorderQueue?: (orderedIds: string[]) => void;
 
   /** Whether auto open file is enabled */
   autoOpenFileEnabled?: boolean;

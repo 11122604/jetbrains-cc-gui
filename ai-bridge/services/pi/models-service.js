@@ -8,9 +8,8 @@
 import { spawnSync } from 'child_process';
 import { homedir } from 'os';
 import {
-  commonCliBinDirs,
+  buildCliSpawnEnv,
   decodeCliOutput,
-  enrichPathWithBinDirs,
   resolveCliSpawn,
   resolvePiCliPath,
 } from '../../utils/cli-path.js';
@@ -55,13 +54,23 @@ export function parsePiModelsOutput(stdout) {
 }
 
 /**
+ * Windows `pi.cmd` npm shim launched via `cmd.exe /d /s /c` can route all
+ * output through stderr; prefer the non-empty stream for parsing.
+ * @param {string} stdout
+ * @param {string} stderr
+ * @returns {string}
+ */
+export function pickParseSource(stdout, stderr) {
+  return stdout.trim() ? stdout : stderr;
+}
+
+/**
  * List models available to the local PI CLI.
  * Prints a single JSON object to stdout (for channel-manager listModels).
  */
 export function listModels() {
   const bin = resolvePiCliPath();
-  const env = { ...process.env };
-  enrichPathWithBinDirs(env, commonCliBinDirs(homedir()));
+  const env = buildCliSpawnEnv(bin, homedir());
 
   let result;
   try {
@@ -102,7 +111,7 @@ export function listModels() {
     return;
   }
 
-  const models = parsePiModelsOutput(stdout);
+  const models = parsePiModelsOutput(pickParseSource(stdout, stderr));
   // Keep a default entry so UI always has a selectable fallback.
   if (models.length === 0) {
     models.push({
@@ -110,6 +119,22 @@ export function listModels() {
       label: 'PI Auto',
       description: 'Use PI CLI default model',
     });
+    // Diagnostic surface: status was 0 but the parser found nothing. Java's
+    // CliModelsHandler logs `payload.debug` so we can tell apart "stdout was
+    // empty", "format changed", and "spawn hit a different pi binary".
+    const stdoutTail = stdout.replace(/\s+$/, '').slice(-400);
+    const stderrTail = stderr.replace(/\s+$/, '').slice(-400);
+    console.log(JSON.stringify({
+      success: true,
+      provider: 'pi',
+      models,
+      debug: {
+        reason: 'parsePiModelsOutput returned no models',
+        stdoutTail,
+        stderrTail,
+      },
+    }));
+    return;
   }
 
   console.log(JSON.stringify({ success: true, provider: 'pi', models }));

@@ -73,11 +73,11 @@ export const buildResetTransientUiState = (opts: ResetTransientUiStateOptions) =
     // Clear stream-end idempotency guard to avoid stale state across sessions.
     window.__streamEndProcessedTurnId = undefined;
     if (opts.contentUpdateTimeoutRef.current != null) {
-      cancelAnimationFrame(opts.contentUpdateTimeoutRef.current);
+      clearTimeout(opts.contentUpdateTimeoutRef.current);
       opts.contentUpdateTimeoutRef.current = null;
     }
     if (opts.thinkingUpdateTimeoutRef.current != null) {
-      cancelAnimationFrame(opts.thinkingUpdateTimeoutRef.current);
+      clearTimeout(opts.thinkingUpdateTimeoutRef.current);
       opts.thinkingUpdateTimeoutRef.current = null;
     }
     // Cancel any updateMessages deferred during the outgoing session's streaming.

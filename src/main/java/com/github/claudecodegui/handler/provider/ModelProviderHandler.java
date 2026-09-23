@@ -4,6 +4,7 @@ import com.github.claudecodegui.handler.UsagePushService;
 import com.github.claudecodegui.handler.core.HandlerContext;
 
 import com.github.claudecodegui.session.SessionSendService;
+import com.github.claudecodegui.session.SessionState;
 import com.github.claudecodegui.skill.SlashCommandRegistry;
 import com.github.claudecodegui.provider.CustomModelContextWindowProvider;
 import com.github.claudecodegui.util.EditorFileUtils;
@@ -29,6 +30,7 @@ public class ModelProviderHandler {
     static {
         // Claude models with 1M context (base IDs)
         MODEL_CONTEXT_LIMITS.put("claude-fable-5-1", 200_000);
+        MODEL_CONTEXT_LIMITS.put("claude-opus-5-5", 200_000);
         MODEL_CONTEXT_LIMITS.put("claude-opus-5", 200_000);
         MODEL_CONTEXT_LIMITS.put("claude-sonnet-5", 200_000);
         MODEL_CONTEXT_LIMITS.put("claude-sonnet-4-7", 200_000);
@@ -38,6 +40,7 @@ public class ModelProviderHandler {
         MODEL_CONTEXT_LIMITS.put("claude-opus-4-6", 200_000);
         // Claude models with [1m] suffix - 1M context
         MODEL_CONTEXT_LIMITS.put("claude-fable-5-1[1m]", 1_000_000);
+        MODEL_CONTEXT_LIMITS.put("claude-opus-5-5[1m]", 1_000_000);
         MODEL_CONTEXT_LIMITS.put("claude-opus-5[1m]", 1_000_000);
         MODEL_CONTEXT_LIMITS.put("claude-sonnet-5[1m]", 1_000_000);
         MODEL_CONTEXT_LIMITS.put("claude-sonnet-4-7[1m]", 1_000_000);
@@ -49,8 +52,10 @@ public class ModelProviderHandler {
         MODEL_CONTEXT_LIMITS.put("claude-haiku-4-5", 200_000);
         // Codex/GPT models
         MODEL_CONTEXT_LIMITS.put("gpt-6-astra", 1_050_000);
+        MODEL_CONTEXT_LIMITS.put("gpt-6-sol", 1_050_000);
         MODEL_CONTEXT_LIMITS.put("gpt-5.6-sol", 1_050_000);
         MODEL_CONTEXT_LIMITS.put("gpt-5.6-terra", 1_050_000);
+        MODEL_CONTEXT_LIMITS.put("gpt-6-luna", 1_050_000);
         MODEL_CONTEXT_LIMITS.put("gpt-5.6-luna", 1_050_000);
         MODEL_CONTEXT_LIMITS.put("gpt-5.4", 1_000_000);
         MODEL_CONTEXT_LIMITS.put("gpt-5.4-mini", 400_000);
@@ -117,8 +122,7 @@ public class ModelProviderHandler {
             if (context.getSession() != null) {
                 context.getSession().setModel(model);
                 if (modelChanged) {
-                    TokenUsageUtils.clearContextUsageFromSessionMessages(
-                            context.getSession().getMessages());
+                    clearSessionUsage();
                 }
                 LOG.info("[ModelProviderHandler] Updated session model to canonical ID: " + model);
             }
@@ -186,8 +190,7 @@ public class ModelProviderHandler {
             if (context.getSession() != null) {
                 context.getSession().setProvider(provider);
                 if (providerChanged) {
-                    TokenUsageUtils.clearContextUsageFromSessionMessages(
-                            context.getSession().getMessages());
+                    clearSessionUsage();
                 }
             }
 
@@ -485,6 +488,14 @@ public class ModelProviderHandler {
         return CustomModelContextWindowProvider.getInstance()
                 .getContextWindow(provider, model)
                 .orElseGet(() -> getModelContextLimit(model));
+    }
+
+    private void clearSessionUsage() {
+        // Both call sites already verified the session is non-null.
+        SessionState state = context.getSession().getState();
+        synchronized (state.getMessageStateLock()) {
+            TokenUsageUtils.clearContextUsageFromSessionMessages(state.getMessagesReference());
+        }
     }
 
 }

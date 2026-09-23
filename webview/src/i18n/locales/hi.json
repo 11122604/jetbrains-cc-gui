@@ -1593,9 +1593,13 @@
         "label": "Sonnet 5",
         "description": "Sonnet 5 · डिफ़ॉल्ट अनुशंसित मॉडल"
       },
+      "opus55": {
+        "label": "Opus 5.5",
+        "description": "Opus 5.5 · नवीनतम Opus अपग्रेड"
+      },
       "opus5": {
         "label": "Opus 5",
-        "description": "Opus 5 · नवीनतम Opus अपग्रेड"
+        "description": "Opus 5 · पिछली Opus पीढ़ी"
       },
       "opus46_1m": {
         "label": "Opus 4.6",
@@ -1625,6 +1629,10 @@
         "label": "GPT-6 Astra",
         "description": "स्वायत्त कंप्यूटर उपयोग और लंबे एजेंटिक कार्यों के लिए नई पीढ़ी का फ्लैगशिप मॉडल।"
       },
+      "gpt6sol": {
+        "label": "GPT-6 Sol",
+        "description": "जटिल पेशेवर कार्यों के लिए GPT-6 फ्रंटियर मॉडल।"
+      },
       "gpt56sol": {
         "label": "GPT-5.6 Sol",
         "description": "जटिल पेशेवर कार्यों के लिए फ्रंटियर मॉडल।"
@@ -1632,6 +1640,10 @@
       "gpt56terra": {
         "label": "GPT-5.6 Terra",
         "description": "बुद्धिमत्ता और लागत में संतुलन वाला GPT-5.6 मॉडल।"
+      },
+      "gpt6luna": {
+        "label": "GPT-6 Luna",
+        "description": "लागत-संवेदनशील वर्कलोड के लिए अनुकूलित GPT-6 मॉडल।"
       },
       "gpt56luna": {
         "label": "GPT-5.6 Luna",

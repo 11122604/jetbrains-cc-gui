@@ -15,7 +15,7 @@
 
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
-import { join, isAbsolute, win32 as pathWin32 } from 'path';
+import { join, dirname, isAbsolute, win32 as pathWin32 } from 'path';
 import { execFileSync, execSync } from 'child_process';
 
 /** Extensions that can be launched on Windows (`.cmd`/`.bat` via cmd.exe). */
@@ -375,23 +375,50 @@ export function resolveCliPath({ binaryName, envKeys = [], homeCandidates = [] }
 
 /**
  * Prepend extra bin dirs to PATH when missing (IDE PATH is often sparse).
+ * binDirs is priority-ordered (see versionManagerBinDirs: "newest versions
+ * first"), so prepend it as a block to keep that order intact. Per-dir
+ * unshift would reverse it, letting the oldest nvm version's `node` shadow
+ * newer ones when a `#!/usr/bin/env node` npm shim is spawned.
  * @param {NodeJS.ProcessEnv} env
  * @param {string[]} binDirs
  */
 export function enrichPathWithBinDirs(env, binDirs = []) {
   const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
   const sep = process.platform === 'win32' ? ';' : ':';
-  let current = env[pathKey] || env.PATH || '';
+  const current = env[pathKey] || env.PATH || '';
   const parts = current ? current.split(sep) : [];
+  const extra = [];
   for (const dir of binDirs) {
-    if (dir && !parts.includes(dir)) {
-      parts.unshift(dir);
+    if (dir && !parts.includes(dir) && !extra.includes(dir)) {
+      extra.push(dir);
     }
   }
-  env[pathKey] = parts.join(sep);
+  env[pathKey] = [...extra, ...parts].join(sep);
   if (pathKey !== 'PATH') {
     env.PATH = env[pathKey];
   }
+}
+
+/**
+ * Spawn env for a resolved CLI binary. The binary's own dir leads PATH so a
+ * `#!/usr/bin/env node` npm shim launches with the node it was installed
+ * under — a stale node from an unrelated version-manager dir must not
+ * shadow it (pi under Node <22.8 dies with "node:module does not provide an
+ * export named 'enableCompileCache'"). Bare names add no dir.
+ * @param {string} bin - resolved CLI path
+ * @param {string} [home]
+ * @param {NodeJS.ProcessEnv} [baseEnv]
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function buildCliSpawnEnv(bin, home = homedir(), baseEnv = process.env) {
+  const env = { ...baseEnv };
+  const dirs = commonCliBinDirs(home);
+  const normalized = stripOuterQuotes(bin);
+  if (isAbsolute(normalized)) {
+    dirs.unshift(dirname(normalized));
+  }
+  enrichPathWithBinDirs(env, dirs);
+  return env;
 }
 
 export function resolveGrokCliPath() {

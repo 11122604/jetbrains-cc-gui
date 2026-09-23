@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ClaudeContentBlock, ClaudeMessage } from '../types';
 import { sliceLatestConversationTurn } from '../utils/turnScope';
-import { deriveTodosForTurn } from './useChatComputations';
+import { deriveSessionTitle, deriveTodosForTurn } from './useChatComputations';
 
 interface TestMessage extends ClaudeMessage {
   __blocks?: ClaudeContentBlock[];
@@ -178,5 +178,72 @@ describe('deriveTodosForTurn', () => {
     expect(deriveTodosForTurn(messages, getContentBlocks, false, 'claude')).toEqual([
       { id: '1', content: 'Review implementation', status: 'pending' },
     ]);
+  });
+});
+
+describe('deriveSessionTitle', () => {
+  const messageText = (message: ClaudeMessage) => message.content ?? '';
+  const derive = (overrides: Partial<Parameters<typeof deriveSessionTitle>[0]> = {}) => deriveSessionTitle({
+    customSessionTitle: null,
+    restoredSessionTitle: null,
+    currentSessionId: null,
+    messages: [],
+    fallbackTitle: 'New Session',
+    getMessageText: messageText,
+    ...overrides,
+  });
+
+  it('prefers a user-set custom title over every other source', () => {
+    expect(derive({
+      customSessionTitle: 'Renamed by hand',
+      restoredSessionTitle: { sessionId: 's1', title: 'CLI title' },
+      currentSessionId: 's1',
+      messages: [user('first prompt')],
+    })).toBe('Renamed by hand');
+  });
+
+  it('prefers the CLI title of the session on screen over prompt derivation', () => {
+    expect(derive({
+      restoredSessionTitle: { sessionId: 's1', title: 'CLI title' },
+      currentSessionId: 's1',
+      messages: [user('mid-conversation prompt')],
+    })).toBe('CLI title');
+  });
+
+  it('ignores a CLI title belonging to another session', () => {
+    expect(derive({
+      restoredSessionTitle: { sessionId: 'other', title: 'CLI title' },
+      currentSessionId: 's1',
+      messages: [user('first prompt')],
+    })).toBe('first prompt');
+  });
+
+  it('falls back to the new-session label when nothing can title the session', () => {
+    expect(derive({ messages: [{ type: 'assistant', content: 'hi' }] })).toBe('New Session');
+  });
+
+  it('skips tool-result carriers so a paginated page never titles from a tool row', () => {
+    // The carrier's rendered text is not the "[tool_result]" marker, so only the
+    // raw block type identifies it.
+    const carrier: ClaudeMessage = {
+      type: 'user',
+      content: 'Bash tool output preview',
+      raw: { message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } },
+    };
+    expect(derive({ messages: [carrier, user('real prompt')] })).toBe('real prompt');
+  });
+
+  it('skips meta rows and internal XML wrappers', () => {
+    expect(derive({
+      messages: [
+        { type: 'user', content: 'caveat', raw: { isMeta: true } } as ClaudeMessage,
+        user('<local-command-caveat>noise</local-command-caveat>'),
+        user('real prompt'),
+      ],
+    })).toBe('real prompt');
+  });
+
+  it('truncates a long prompt to the header budget', () => {
+    expect(derive({ messages: [user('abcdefghijklmnopqrstuvwxyz')] })).toBe('abcdefghijklmno...');
   });
 });

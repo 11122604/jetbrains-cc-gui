@@ -31,6 +31,17 @@ public class PricingTableTest {
     }
 
     @Test
+    public void claudeResolvesOpus55AboveTheBareOpus5Prefix() {
+        // "claude-opus-5-5" has its own rate ($4/$20), so it must outrank the shorter
+        // "claude-opus-5" prefix ($5/$25) and survive dated snapshots instead of losing to it.
+        assertEquals(4.0, ClaudePricingTable.resolve("claude-opus-5-5").inputCostPer1M(), 1e-9);
+        assertEquals(20.0, ClaudePricingTable.resolve("claude-opus-5-5").outputCostPer1M(), 1e-9);
+        assertEquals(5.0, ClaudePricingTable.resolve("claude-opus-5-5-2026-03-01").cacheWriteCostPer1M(), 1e-9);
+        assertEquals(0.40, ClaudePricingTable.resolve("claude-opus-5-5").cacheReadCostPer1M(), 1e-9);
+        assertEquals(5.0, ClaudePricingTable.resolve("claude-opus-5").inputCostPer1M(), 1e-9);
+    }
+
+    @Test
     public void claudeAppliesAbove200KTierForSonnet4() {
         ClaudePricing pricing = ClaudePricingTable.resolve("claude-sonnet-4");
         assertNotNull(pricing);
@@ -53,5 +64,20 @@ public class PricingTableTest {
         // Bare "gpt-5.6" and a dated snapshot both resolve to gpt-5.6-sol pricing.
         assertEquals(5.0, CodexPricingTable.resolve("gpt-5.6").inputCostPer1M(), 1e-9);
         assertEquals(5.0, CodexPricingTable.resolve("gpt-5.6-sol-2026-01-15").inputCostPer1M(), 1e-9);
+    }
+
+    @Test
+    public void codexResolvesGpt6SolAndLunaBeforeTheBareGpt6Prefix() {
+        // "gpt-6" itself still aliases to gpt-6-astra, but the newer Sol / Luna ids must win
+        // over that prefix match (prefix order in CodexPricingTable) and survive snapshots.
+        // GPT-6 Sol is $2/$10 and GPT-6 Luna is $0.1/$0.5 per 1M tokens (cache read = 10% of input).
+        assertEquals(2.0, CodexPricingTable.resolve("gpt-6-sol").inputCostPer1M(), 1e-9);
+        assertEquals(10.0, CodexPricingTable.resolve("gpt-6-sol").outputCostPer1M(), 1e-9);
+        assertEquals(0.2, CodexPricingTable.resolve("gpt-6-sol").cacheReadCostPer1M(), 1e-9);
+        assertEquals(2.0, CodexPricingTable.resolve("gpt-6-sol-2026-02-01").inputCostPer1M(), 1e-9);
+        assertEquals(0.1, CodexPricingTable.resolve("gpt-6-luna").inputCostPer1M(), 1e-9);
+        assertEquals(0.5, CodexPricingTable.resolve("gpt-6-luna").outputCostPer1M(), 1e-9);
+        assertEquals(0.01, CodexPricingTable.resolve("gpt-6-luna").cacheReadCostPer1M(), 1e-9);
+        assertEquals(10.0, CodexPricingTable.resolve("gpt-6").inputCostPer1M(), 1e-9);
     }
 }

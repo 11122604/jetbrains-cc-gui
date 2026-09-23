@@ -1605,9 +1605,13 @@
         "label": "Sonnet 5",
         "description": "Sonnet 5 · デフォルトモデルを使用"
       },
+      "opus55": {
+        "label": "Opus 5.5",
+        "description": "Opus 5.5 · 最新の Opus アップグレード"
+      },
       "opus5": {
         "label": "Opus 5",
-        "description": "Opus 5 · 最新の Opus アップグレード"
+        "description": "Opus 5 · 前世代の Opus モデル"
       },
       "opus46_1m": {
         "label": "Opus 4.6",
@@ -1631,6 +1635,10 @@
         "label": "GPT-6 Astra",
         "description": "自律的なコンピュータ操作と長時間のエージェントタスク向けの新世代フラッグシップ"
       },
+      "gpt6sol": {
+        "label": "GPT-6 Sol",
+        "description": "複雑なプロフェッショナル業務向けの GPT-6 フロンティアモデル"
+      },
       "gpt56sol": {
         "label": "GPT-5.6 Sol",
         "description": "複雑なプロフェッショナル業務向けのフロンティアモデル"
@@ -1638,6 +1646,10 @@
       "gpt56terra": {
         "label": "GPT-5.6 Terra",
         "description": "知能とコストのバランスに優れた GPT-5.6 モデル"
+      },
+      "gpt6luna": {
+        "label": "GPT-6 Luna",
+        "description": "コスト重視のワークロードに最適化された GPT-6 モデル"
       },
       "gpt56luna": {
         "label": "GPT-5.6 Luna",

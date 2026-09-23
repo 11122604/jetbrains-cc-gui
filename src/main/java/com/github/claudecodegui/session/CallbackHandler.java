@@ -167,4 +167,22 @@ public class CallbackHandler {
             callback.onTaskEvent(eventJson);
         }
     }
+
+    /**
+     * Notify of Claude history page metadata (for pagination).
+     */
+    public void notifyClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset, String sessionTitle) {
+        if (callback != null) {
+            callback.onClaudeHistoryPageInfo(sessionId, fromTurn, totalTurns, hasMore, cursorReset, sessionTitle);
+        }
+    }
+
+    /**
+     * Notify that an earlier Claude history page failed to load.
+     */
+    public void notifyClaudeHistoryPageError(String sessionId, String message) {
+        if (callback != null) {
+            callback.onClaudeHistoryPageError(sessionId, message);
+        }
+    }
 }

@@ -5,11 +5,11 @@ export interface UseControlledValueSyncOptions {
   value: string | undefined;
   editableRef: React.RefObject<HTMLDivElement | null>;
   isComposingRef: MutableRefObject<boolean>;
-  isExternalUpdateRef: MutableRefObject<boolean>;
   getTextContent: () => string;
   setHasContent: (hasContent: boolean) => void;
   adjustHeight: () => void;
   invalidateCache: () => void;
+  cancelPendingInput: () => void;
 }
 
 /**
@@ -29,11 +29,11 @@ export function useControlledValueSync({
   value,
   editableRef,
   isComposingRef,
-  isExternalUpdateRef,
   getTextContent,
   setHasContent,
   adjustHeight,
   invalidateCache,
+  cancelPendingInput,
 }: UseControlledValueSyncOptions): void {
   useEffect(() => {
     if (value === undefined) return;
@@ -49,8 +49,8 @@ export function useControlledValueSync({
     const currentText = getTextContent();
 
     if (currentText !== value) {
-      isExternalUpdateRef.current = true;
-
+      // A queued draft must not overwrite the external replacement.
+      cancelPendingInput();
       editableRef.current.innerText = value;
       setHasContent(!!value.trim());
       adjustHeight();
@@ -72,10 +72,10 @@ export function useControlledValueSync({
     value,
     editableRef,
     isComposingRef,
-    isExternalUpdateRef,
     getTextContent,
     setHasContent,
     adjustHeight,
     invalidateCache,
+    cancelPendingInput,
   ]);
 }

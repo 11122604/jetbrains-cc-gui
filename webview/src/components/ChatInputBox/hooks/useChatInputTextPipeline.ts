@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import type { Dispatch, RefObject, SetStateAction } from 'react';
 import type { ChatInputBoxProps } from '../types.js';
 import { useTextContent } from './useTextContent.js';
 import { useFileTags } from './useFileTags.js';
@@ -27,13 +27,20 @@ const COMPOSITION_INPUT_TYPES = new Set([
   'deleteByComposition',
 ]);
 
+/** Zero-width and BOM characters that JCEF can leave behind in a visually empty editor. */
+const INVISIBLE_CHARS_RE = /[\u200B-\u200D\uFEFF]/g;
+
+/** Whether the editor shows nothing to the user, so the parent should receive an empty draft. */
+function isVisuallyEmpty(text: string): boolean {
+  return !text.replace(INVISIBLE_CHARS_RE, '').trim();
+}
+
 interface UseChatInputTextPipelineOptions
   extends Pick<
     ChatInputBoxProps,
     'onInput' | 'onAgentSelect' | 'onOpenAgentSettings' | 'onOpenPromptSettings'
   > {
   editableRef: RefObject<HTMLDivElement | null>;
-  isExternalUpdateRef: MutableRefObject<boolean>;
   setHasContent: Dispatch<SetStateAction<boolean>>;
   currentProvider: string;
 }
@@ -43,13 +50,14 @@ interface UseChatInputTextPipelineOptions
  * completion detection pipeline for ChatInputBox.
  *
  * Owns the contenteditable text pipeline: text content caching, file/quote tag
- * rendering, completion coordinators, debounced parent sync, IME composition
- * state, input history and mac cursor movement. Extracted from ChatInputBox to
- * keep the component under size limits; the wiring is a verbatim move.
+ * rendering, completion coordinators, IME composition state, input history and
+ * mac cursor movement. It is also the single owner of parent notification: the
+ * debounced `onInput`, immediate `notifyInput`, `cancelPendingInput` for
+ * external replacements, and the unmount flush that keeps an unpublished draft
+ * from being lost when the editor leaves the tree.
  */
 export function useChatInputTextPipeline({
   editableRef,
-  isExternalUpdateRef,
   setHasContent,
   onInput,
   currentProvider,
@@ -89,19 +97,6 @@ export function useChatInputTextPipeline({
   }, [renderFileTags, renderQuoteTags]);
 
   /**
-   * Clear input box
-   */
-  const clearInput = useCallback(() => {
-    if (editableRef.current) {
-      editableRef.current.innerHTML = '';
-      editableRef.current.style.height = 'auto';
-      setHasContent(false);
-      // Notify parent component that input is cleared
-      onInput?.('');
-    }
-  }, [onInput]);
-
-  /**
    * Adjust input box height
    * Let contenteditable element expand naturally (height: auto),
    * outer container (.input-editable-wrapper) controls scrolling via max-height and overflow-y.
@@ -115,7 +110,7 @@ export function useChatInputTextPipeline({
     el.style.height = 'auto';
     // Hide inner scrollbar, completely rely on outer container scrolling
     el.style.overflowY = 'hidden';
-  }, []);
+  }, [editableRef]);
 
   const {
     scheduleTagRendering,
@@ -152,26 +147,29 @@ export function useChatInputTextPipeline({
     onOpenPromptSettings,
   });
 
+  // Keep the debounce alive when parent callbacks change, without retaining old props.
+  const onInputRef = useRef(onInput);
+  const pendingInputRef = useRef(false);
+  useLayoutEffect(() => {
+    onInputRef.current = onInput;
+  }, [onInput]);
+
   // Performance optimization: Debounced onInput callback
   // Reduces parent component re-renders during rapid typing
   // Also skips during IME composition to prevent parent re-renders that cause JCEF stutter
   const debouncedOnInput = useMemo(
     () =>
       debounce((text: string) => {
-        // Skip if this is an external value update to avoid loops
-        if (isExternalUpdateRef.current) {
-          isExternalUpdateRef.current = false;
-          return;
-        }
         // Skip during active IME composition to prevent parent re-renders
         // that can disrupt Korean/CJK input in JCEF environments.
         // The update will be triggered after compositionEnd via handleInput.
         if (sharedComposingRef.current) {
           return;
         }
-        onInput?.(text);
+        pendingInputRef.current = false;
+        onInputRef.current?.(text);
       }, DEBOUNCE_TIMING.ON_INPUT_CALLBACK_MS),
-    [onInput]
+    [sharedComposingRef]
   );
 
   /**
@@ -182,6 +180,7 @@ export function useChatInputTextPipeline({
    */
   const handleInput = useCallback(
     (inputType?: string) => {
+      pendingInputRef.current = true;
       const timer = perfTimer('handleInput');
 
       // Only trust our composition-event-backed ref for IME state detection.
@@ -219,9 +218,8 @@ export function useChatInputTextPipeline({
       const text = getTextContent();
       timer.mark('getTextContent');
 
-      // Remove zero-width and other invisible characters before checking if empty, ensure placeholder shows when only zero-width characters remain
-      const cleanText = text.replace(/[\u200B-\u200D\uFEFF]/g, '');
-      const isEmpty = !cleanText.trim();
+      // Ensure the placeholder shows when only zero-width characters remain.
+      const isEmpty = isVisuallyEmpty(text);
 
       // If content is empty, clear innerHTML to ensure :empty pseudo-class works (show placeholder)
       if (isEmpty && editableRef.current) {
@@ -258,6 +256,9 @@ export function useChatInputTextPipeline({
       scheduleTagRendering,
       invalidateCache,
       syncInlineCompletion,
+      setHasContent,
+      editableRef,
+      sharedComposingRef,
     ]
   );
 
@@ -276,18 +277,48 @@ export function useChatInputTextPipeline({
     handleInput,
   });
 
+  const cancelPendingInput = useCallback(() => {
+    cancelPendingFallback();
+    debouncedOnInput.cancel();
+    pendingInputRef.current = false;
+  }, [cancelPendingFallback, debouncedOnInput]);
+
+  const notifyInput = useCallback((text: string) => {
+    cancelPendingInput();
+    onInputRef.current?.(text);
+  }, [cancelPendingInput]);
+
+  // IME edits may not have reached the debounce yet. Read them before React
+  // detaches the DOM, without treating hydration or a cleared draft as an edit.
+  useLayoutEffect(() => () => {
+    if (!pendingInputRef.current) return;
+    const text = getTextContent();
+    notifyInput(isVisuallyEmpty(text) ? '' : text);
+  }, [getTextContent, notifyInput]);
+
+  const clearInput = useCallback(() => {
+    if (editableRef.current) {
+      editableRef.current.innerHTML = '';
+      editableRef.current.style.height = 'auto';
+      setHasContent(false);
+      notifyInput('');
+    }
+  }, [editableRef, notifyInput, setHasContent]);
+
   // Wrap composition handlers to sync sharedComposingRef (used by completion detection)
   // Both refs are now set synchronously — no RAF, no race conditions.
   const handleCompositionStart = useCallback(() => {
     sharedComposingRef.current = true;
+    // Pre-composition text must not publish between commit and its fallback input.
+    debouncedOnInput.cancel();
     cancelTagRendering();
     rawHandleCompositionStart();
-  }, [cancelTagRendering, rawHandleCompositionStart]);
+  }, [cancelTagRendering, debouncedOnInput, rawHandleCompositionStart, sharedComposingRef]);
 
   const handleCompositionEnd = useCallback(() => {
     rawHandleCompositionEnd();
     sharedComposingRef.current = false;
-  }, [rawHandleCompositionEnd]);
+  }, [rawHandleCompositionEnd, sharedComposingRef]);
 
   useEffect(() => {
     setRenderFileTags(renderTagsNowIfSafe);
@@ -331,7 +362,9 @@ export function useChatInputTextPipeline({
     clearInput,
     adjustHeight,
     closeAllCompletions,
-    debouncedOnInput,
+    cancelPendingInput,
+    flushPendingInput: debouncedOnInput.flush,
+    notifyInput,
     handleInput,
     isComposingRef,
     lastCompositionEndTimeRef,

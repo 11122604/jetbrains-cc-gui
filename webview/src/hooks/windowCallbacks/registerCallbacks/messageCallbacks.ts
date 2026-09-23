@@ -112,6 +112,7 @@ export function registerMessageCallbacks(
     updateContextUsageData,
     closeContextUsageDialog,
     currentSessionIdRef,
+    setRestoredSessionTitle,
   } = options;
 
   const ensureStreamingAssistantPreserved = (prevList: ClaudeMessage[], resultList: ClaudeMessage[]): ClaudeMessage[] => {
@@ -142,14 +143,14 @@ export function registerMessageCallbacks(
   // Stored on `window` so that if registerMessageCallbacks is called again
   // (e.g., HMR, parent re-render), the previous pending timer is cancelled
   // first — preventing stale closures from executing.
-  if (window.__pendingUpdateRaf != null) {
-    clearTimeout(window.__pendingUpdateRaf);
-    window.__pendingUpdateRaf = null;
+  if (window.__pendingUpdateTimer != null) {
+    clearTimeout(window.__pendingUpdateTimer);
+    window.__pendingUpdateTimer = null;
     window.__pendingUpdateJson = null;
     window.__pendingUpdateSequence = null;
   }
   let pendingUpdateJson: string | null = null;
-  let pendingUpdateRaf: number | null = null;
+  let pendingUpdateTimer: number | null = null;
   let pendingUpdateSequence: number | null = null;
   const pendingCodexHistoryPages = new Map<string, {
     sessionId: string;
@@ -176,17 +177,17 @@ export function registerMessageCallbacks(
     addToast(message, 'error');
   };
 
-  // Expose a cancellation function so onStreamEnd can cancel stale rAF-deferred
+  // Expose a cancellation function so onStreamEnd can cancel stale timer-deferred
   // updateMessages calls, preventing them from overwriting the final state after
   // streaming refs are cleared.
   const cancelPendingUpdateMessages = () => {
-    if (pendingUpdateRaf !== null) {
-      clearTimeout(pendingUpdateRaf);
+    if (pendingUpdateTimer !== null) {
+      clearTimeout(pendingUpdateTimer);
     }
-    pendingUpdateRaf = null;
+    pendingUpdateTimer = null;
     pendingUpdateJson = null;
     pendingUpdateSequence = null;
-    window.__pendingUpdateRaf = null;
+    window.__pendingUpdateTimer = null;
     window.__pendingUpdateJson = null;
     window.__pendingUpdateSequence = null;
     window.__streamingDeltaRenderDeferred = false;
@@ -230,7 +231,7 @@ export function registerMessageCallbacks(
 
   const processUpdateMessages = (json: string, sequence: number | null = null) => {
     // Re-check the session-transition guard inside processUpdateMessages so the
-    // rAF-deferred path (window.updateMessages → setTimeout → processUpdateMessages)
+    // timer-deferred path (window.updateMessages → setTimeout → processUpdateMessages)
     // cannot resurrect cleared messages when a transition starts between the
     // entry-point check and the deferred fire. This also catches synchronous
     // callers that bypass the entry point — addHistoryMessage / addUserMessage
@@ -518,7 +519,14 @@ export function registerMessageCallbacks(
           ? Math.max(0, storedBaseIndex)
           : 0;
         const backendMessageCount = prev.length - prependedCount;
+        // A tail cannot bridge a missing prefix in an existing full transcript.
+        // Retain it until a complete snapshot arrives; empty pages can start a window.
         const hasFullPrefix = currentBaseIndex === 0 && baseIndex <= backendMessageCount;
+        const startsTailWindow = baseIndex > 0
+          && (currentBaseIndex > 0 || prev.length === 0);
+        if (!hasFullPrefix && !startsTailWindow && baseIndex > 0) {
+          return prev;
+        }
         let merged = hasFullPrefix
           ? [...prev.slice(0, prependedCount + baseIndex), ...tail]
           : [...prependedHistory, ...tail];
@@ -582,27 +590,27 @@ export function registerMessageCallbacks(
       window.__lastStreamActivityAt = Date.now();
     }
 
-    // During streaming, coalesce rapid updateMessages calls into one-per-frame.
-    // The backend coalescer may push every 50ms; JSON.parse of large payloads
-    // (100KB+ for long conversations) blocks the main thread and causes dropped
-    // frames ("fake freeze"). Deferring to rAF ensures we only parse the latest
-    // payload and yield to the browser between frames.
+    // During streaming, coalesce rapid updateMessages calls into one per ~16ms
+    // timer. The backend coalescer may push every 50ms; JSON.parse of large
+    // payloads (100KB+ for long conversations) blocks the main thread and
+    // causes dropped frames ("fake freeze"). Deferring to a short timer ensures
+    // we only parse the latest payload and yield to the browser between renders.
     if (isStreamingRef.current) {
       pendingUpdateJson = json;
       pendingUpdateSequence = sequence;
       window.__pendingUpdateJson = json;
       window.__pendingUpdateSequence = sequence;
-      if (pendingUpdateRaf === null) {
+      if (pendingUpdateTimer === null) {
         const timerId = setTimeout(() => {
-          pendingUpdateRaf = null;
-          window.__pendingUpdateRaf = null;
+          pendingUpdateTimer = null;
+          window.__pendingUpdateTimer = null;
           const latestJson = pendingUpdateJson;
           const latestSequence = pendingUpdateSequence;
           pendingUpdateJson = null;
           pendingUpdateSequence = null;
           window.__pendingUpdateJson = null;
           window.__pendingUpdateSequence = null;
-          // A session transition may have begun while this frame was buffered.
+          // A session transition may have begun while this update was buffered.
           // processUpdateMessages re-checks the transition guard and stashes
           // when needed; do not drop the payload entirely.
           if (latestJson) {
@@ -610,8 +618,8 @@ export function registerMessageCallbacks(
           }
           window.__flushDeferredStreamingRenders?.();
         }, 16);
-        pendingUpdateRaf = timerId as unknown as number;
-        window.__pendingUpdateRaf = timerId as unknown as number;
+        pendingUpdateTimer = timerId as unknown as number;
+        window.__pendingUpdateTimer = timerId as unknown as number;
       }
       return;
     }
@@ -790,17 +798,18 @@ export function registerMessageCallbacks(
     }
     // Cancel any pending deferred updateMessages to prevent stale data from
     // being applied after messages are cleared.
-    if (pendingUpdateRaf !== null) {
-      clearTimeout(pendingUpdateRaf);
-      pendingUpdateRaf = null;
+    if (pendingUpdateTimer !== null) {
+      clearTimeout(pendingUpdateTimer);
+      pendingUpdateTimer = null;
       pendingUpdateJson = null;
       pendingUpdateSequence = null;
-      window.__pendingUpdateRaf = null;
+      window.__pendingUpdateTimer = null;
       window.__pendingUpdateJson = null;
       window.__pendingUpdateSequence = null;
     }
     window.__deniedToolIds?.clear();
     window.__codexHistoryPageInfo = undefined;
+    window.__claudeHistoryPageInfo = undefined;
     for (const pending of pendingCodexHistoryPages.values()) {
       clearTimeout(pending.timeoutId);
     }
@@ -973,6 +982,62 @@ export function registerMessageCallbacks(
       addToast(error.message || 'Failed to load earlier Codex history', 'error');
     } catch (parseError) {
       console.error('[Frontend] Failed to parse Codex history page error:', parseError);
+    }
+  };
+
+  // Claude history pagination callbacks
+  window.claudeHistoryPageInfo = (json: string) => {
+    try {
+      const info = JSON.parse(json) as CodexHistoryPageInfo;
+      // The page's CLI-derived title keeps the session header stable even when
+      // the loaded span does not include the session's first prompt. It is
+      // stored ahead of the session guard because the guard only protects the
+      // on-screen pagination state: during a Java-driven auto-restore the page
+      // info can beat the setSessionId that the ready replay pushes, and a
+      // title dropped here would never be re-sent. The entry is keyed by
+      // session and re-validated at read time, so storing it early is safe.
+      // Same-content no-op keeps the context value stable across earlier-page
+      // loads, sparing every SessionContext consumer a re-render.
+      const { sessionId, sessionTitle } = info;
+      if (sessionTitle) {
+        setRestoredSessionTitle(prev => (
+          prev && prev.sessionId === sessionId && prev.title === sessionTitle
+            ? prev
+            : { sessionId, title: sessionTitle }
+        ));
+      }
+      if (currentSessionIdRef.current !== info.sessionId) return;
+      // Cache so a MessageList that mounts after this callback (e.g. provider
+      // switch remount) can still restore the pagination state.
+      // The Java bridge sends a slimmer payload than the codex one; fill the
+      // CodexHistoryPageInfo fields it lacks so both caches share one shape.
+      window.__claudeHistoryPageInfo = {
+        pageId: '',
+        sessionId: info.sessionId,
+        mode: info.cursorReset ? 'replace' : 'prepend',
+        fromTurn: info.fromTurn,
+        toTurn: info.fromTurn,
+        totalTurns: info.totalTurns,
+        hasMore: info.hasMore,
+        loadedMessageCount: 0,
+        cursorReset: info.cursorReset,
+      };
+      window.dispatchEvent(new CustomEvent<CodexHistoryPageInfo>('claude-history-page-info', {
+        detail: info,
+      }));
+    } catch (error) {
+      console.error('[Frontend] Failed to parse Claude history page info:', error);
+    }
+  };
+
+  window.claudeHistoryPageError = (json: string) => {
+    try {
+      const error = JSON.parse(json) as { sessionId?: string; message?: string };
+      if (error.sessionId && currentSessionIdRef.current !== error.sessionId) return;
+      window.dispatchEvent(new CustomEvent('claude-history-page-error', { detail: error }));
+      addToast(error.message || 'Failed to load earlier Claude history', 'error');
+    } catch (parseError) {
+      console.error('[Frontend] Failed to parse Claude history page error:', parseError);
     }
   };
 

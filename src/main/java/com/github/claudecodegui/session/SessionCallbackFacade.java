@@ -88,4 +88,12 @@ public class SessionCallbackFacade {
     public void notifyUserMessageUuidPatched(String content, String uuid) {
         callbackHandler.notifyUserMessageUuidPatched(content, uuid);
     }
+
+    public void notifyClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset, String sessionTitle) {
+        callbackHandler.notifyClaudeHistoryPageInfo(sessionId, fromTurn, totalTurns, hasMore, cursorReset, sessionTitle);
+    }
+
+    public void notifyClaudeHistoryPageError(String sessionId, String message) {
+        callbackHandler.notifyClaudeHistoryPageError(sessionId, message);
+    }
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderSelect } from './ProviderSelect';
 import {
@@ -31,6 +31,7 @@ vi.mock('react-i18next', () => ({
 
 describe('ProviderSelect CLI visibility', () => {
   afterEach(() => {
+    cleanup();
     localStorage.removeItem(CLI_PROVIDER_VISIBILITY_KEY);
   });
 

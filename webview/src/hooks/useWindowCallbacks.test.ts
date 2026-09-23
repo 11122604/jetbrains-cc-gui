@@ -36,6 +36,7 @@ describe('useWindowCallbacks integration', () => {
     setHistoryData: vi.fn(),
     setCurrentSessionId: vi.fn(),
     setCustomSessionTitle: vi.fn(),
+    setRestoredSessionTitle: vi.fn(),
     setUsagePercentage: vi.fn(),
     setUsageUsedTokens: vi.fn(),
     setUsageMaxTokens: vi.fn(),
@@ -138,18 +139,13 @@ describe('useWindowCallbacks integration', () => {
     window.__dependencyStatusState = 'pending';
   });
 
-  /** Stub timer/rAF globals to execute synchronously for streaming tests. */
+  /** Stub timer globals to execute synchronously for streaming tests. */
   const stubSynchronousTimers = () => {
     vi.stubGlobal('setTimeout', (callback: () => void) => {
       callback();
       return 1 as unknown as ReturnType<typeof setTimeout>;
     });
     vi.stubGlobal('clearTimeout', vi.fn());
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
-    vi.stubGlobal('cancelAnimationFrame', vi.fn());
   };
 
   it('applies Java recovery state without echoing provider or model bridge commands', () => {
@@ -1050,6 +1046,49 @@ describe('useWindowCallbacks integration', () => {
 
     expect(buffer.current.map((message) => message.content)).toEqual(['current', 'answer']);
     expect(window.__minAcceptedUpdateSequence).toBe(8);
+  });
+
+  it('ignores a tail this page cannot place instead of erasing the transcript', () => {
+    const { opts, buffer } = createOptsWithMessages([
+      { type: 'user', content: 'known-user' },
+      { type: 'assistant', content: 'known-answer' },
+    ]);
+    renderHook(() => useWindowCallbacks(opts));
+    window.__messageBaseIndex = 0;
+
+    // Base 220 with a two-message list at base 0: messages 2..219 are missing, so
+    // splicing would drop the known tail and replacing would erase the transcript.
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'assistant', content: 'tail-only' },
+    ]), 220, 7));
+
+    expect(buffer.current.map((message) => message.content)).toEqual([
+      'known-user',
+      'known-answer',
+    ]);
+    expect(window.__messageBaseIndex).toBe(0);
+  });
+
+  it('continues an existing tail window across a growing tail', () => {
+    const { opts, buffer } = createOptsWithMessages([]);
+    renderHook(() => useWindowCallbacks(opts));
+
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'user', content: 'message-220' },
+      { type: 'assistant', content: 'message-221' },
+    ]), 220, 7));
+    expect(window.__messageBaseIndex).toBe(220);
+
+    act(() => window.updateMessageTail!(JSON.stringify([
+      { type: 'user', content: 'message-221' },
+      { type: 'assistant', content: 'message-222' },
+    ]), 221, 8));
+
+    expect(buffer.current.map((message) => message.content)).toEqual([
+      'message-221',
+      'message-222',
+    ]);
+    expect(window.__messageBaseIndex).toBe(221);
   });
 
   it('resets the tail base when a full snapshot arrives', () => {
@@ -1975,14 +2014,9 @@ describe('useWindowCallbacks integration', () => {
 
     it('defers delta rendering until a pending structural snapshot is processed', () => {
       vi.useFakeTimers();
-      const rafCallbacks: FrameRequestCallback[] = [];
-      let nextRafId = 0;
-      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-        rafCallbacks.push(callback);
-        nextRafId += 1;
-        return nextRafId;
-      });
-      vi.stubGlobal('cancelAnimationFrame', vi.fn());
+      // Delta renderers schedule via setTimeout (like the updateMessages batch
+      // timer); spy it to count new schedulings while keeping fake-timer behaviour.
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 
       const opts = createOptions();
       renderHook(() => useWindowCallbacks(opts));
@@ -2004,13 +2038,16 @@ describe('useWindowCallbacks integration', () => {
       });
 
       expect(opts.streamingContentRef.current).toBe('delta-after-snapshot');
-      expect(rafCallbacks).toHaveLength(0);
+      // Only the snapshot's own 16ms batching timer is pending — delta rendering
+      // scheduled nothing while the structural snapshot is unprocessed.
+      const schedulingsAfterDefer = setTimeoutSpy.mock.calls.length;
 
       act(() => {
         vi.advanceTimersByTime(16);
       });
 
-      expect(rafCallbacks).toHaveLength(2);
+      // Snapshot processed; the deferred flush scheduled content + thinking renders.
+      expect(setTimeoutSpy.mock.calls.length).toBe(schedulingsAfterDefer + 2);
     });
 
     it('onBlockReset keeps streaming refs cumulative across turns (single assistant message)', () => {
