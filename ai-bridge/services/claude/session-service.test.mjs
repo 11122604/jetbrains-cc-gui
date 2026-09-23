@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import {
   buildSessionMessagesPayload,
   buildSessionMessagesPagePayload,
+  extractSessionTitle,
   getLatestUserMessage,
   isUserTextMessage,
   isInterruptionMarker,
@@ -548,6 +549,100 @@ test('buildSessionMessagesPagePayload never splits a turn across pages', () => {
     assert.equal(page.messages.length, 6);
     assert.equal(page.messages[0].message.content, 'q3');
     assert.equal(page.messages[page.messages.length - 1].message.content[0].name, 'Bash');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('extractSessionTitle follows the CLI resume-picker priority', () => {
+  const userPrompt = (uuid, text) => ({
+    type: 'user', uuid, message: { role: 'user', content: text },
+  });
+  // Mirrors cli.js Se(): customTitle > aiTitle > summary > lastPrompt > firstPrompt
+  assert.equal(extractSessionTitle([
+    { type: 'ai-title', aiTitle: 'AI Title' },
+    { type: 'custom-title', customTitle: 'Renamed' },
+    { type: 'summary', summary: 'Compacted summary' },
+    userPrompt('u1', 'first prompt'),
+  ]), 'Renamed');
+  assert.equal(extractSessionTitle([
+    { type: 'ai-title', aiTitle: 'AI Title' },
+    { type: 'summary', summary: 'Compacted summary' },
+    userPrompt('u1', 'first prompt'),
+  ]), 'AI Title');
+  // summary wins over lastPrompt/firstPrompt (Se() checks summary first)
+  assert.equal(extractSessionTitle([
+    { type: 'summary', summary: 'Compacted summary' },
+    { lastPrompt: 'latest prompt' },
+    userPrompt('u1', 'first prompt'),
+  ]), 'Compacted summary');
+  assert.equal(extractSessionTitle([
+    { lastPrompt: 'latest prompt' },
+    userPrompt('u1', 'first prompt'),
+  ]), 'latest prompt');
+  assert.equal(extractSessionTitle([
+    userPrompt('u1', 'first prompt'),
+    userPrompt('u2', 'latest prompt'),
+  ]), 'first prompt');
+  // Tool-result carriers and interruption markers never become the title
+  assert.equal(extractSessionTitle([
+    userPrompt('u1', '[Request interrupted by user]'),
+    { type: 'user', uuid: 'r1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] } },
+  ]), null);
+  assert.equal(extractSessionTitle([]), null);
+});
+
+test('extractSessionTitle skips isMeta and XML-wrapped rows when deriving firstPrompt', () => {
+  const userPrompt = (uuid, text) => ({
+    type: 'user', uuid, message: { role: 'user', content: text },
+  });
+  // Real transcript shapes: caveat rows carry isMeta, command rows don't, but
+  // both are CLI plumbing. The webview renders the stored title verbatim.
+  assert.equal(extractSessionTitle([
+    { type: 'user', uuid: 'm1', isMeta: true, message: { role: 'user', content: '<local-command-caveat>Caveat: ...</local-command-caveat>' } },
+    { type: 'user', uuid: 'm2', message: { role: 'user', content: '<command-name>/clear</command-name>\n<command-message>clear</command-message>' } },
+    userPrompt('u1', 'real prompt'),
+  ]), 'real prompt');
+  // A transcript made only of CLI plumbing yields no title at all.
+  assert.equal(extractSessionTitle([
+    { type: 'user', uuid: 'm2', message: { role: 'user', content: '<command-name>/clear</command-name>' } },
+  ]), null);
+});
+
+test('extractSessionTitle returns the trimmed title and skips blank records', () => {
+  const userPrompt = (uuid, text) => ({
+    type: 'user', uuid, message: { role: 'user', content: text },
+  });
+  assert.equal(extractSessionTitle([
+    { type: 'custom-title', customTitle: '  Padded title  ' },
+    userPrompt('u1', 'first prompt'),
+  ]), 'Padded title');
+  assert.equal(extractSessionTitle([
+    { type: 'ai-title', aiTitle: '\tTabbed AI title\n' },
+  ]), 'Tabbed AI title');
+  // Blank records must not become the title nor mask the fallback chain.
+  assert.equal(extractSessionTitle([
+    { type: 'custom-title', customTitle: '   ' },
+    { lastPrompt: ' ' },
+    userPrompt('u1', 'first prompt'),
+  ]), 'first prompt');
+});
+
+test('buildSessionMessagesPagePayload carries the CLI session title', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-claude-page-'));
+  try {
+    const file = path.join(tempDir, 'session.jsonl');
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } }),
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'a1' } }),
+      JSON.stringify({ type: 'user', uuid: 'u2', message: { role: 'user', content: 'second prompt' } }),
+      JSON.stringify({ type: 'custom-title', customTitle: 'Renamed in CLI', sessionId: 's' }),
+    ];
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+
+    const page = buildSessionMessagesPagePayload(file, null, 30);
+    assert.equal(page.success, true);
+    assert.equal(page.sessionTitle, 'Renamed in CLI');
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

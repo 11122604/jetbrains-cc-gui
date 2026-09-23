@@ -398,6 +398,54 @@ function isTurnStart(message) {
   );
 }
 
+/** The trimmed value when it is a non-blank string, null otherwise. */
+function trimmedText(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Derive the CLI's display title for a session from its raw transcript rows,
+ * mirroring the resume-picker priority (cli.js Se() over the lite-read
+ * enrichment KhY): customTitle > aiTitle > summary > lastPrompt > firstPrompt.
+ * Title records are metadata rows interleaved with the messages
+ * ({"type":"custom-title"...}, {"type":"ai-title"...}, summary rows), so the
+ * scan runs on the raw parse, before conversation-chain filtering drops them.
+ * Later records of the same kind win, matching the CLI's last-write view.
+ * The firstPrompt fallback skips isMeta rows and XML-wrapped CLI plumbing
+ * (<command-name>/<local-command-caveat>), like the CLI's _hY scan.
+ * Returns null when the transcript carries no title material; the frontend
+ * then falls back to deriving a title from the loaded messages.
+ */
+export function extractSessionTitle(rows) {
+  let customTitle = null;
+  let aiTitle = null;
+  let summary = null;
+  let lastPrompt = null;
+  let firstPrompt = null;
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    if (row.type === 'custom-title') {
+      customTitle = trimmedText(row.customTitle) ?? customTitle;
+    } else if (row.type === 'ai-title') {
+      aiTitle = trimmedText(row.aiTitle) ?? aiTitle;
+    } else {
+      summary = trimmedText(row.summary) ?? summary;
+    }
+    lastPrompt = trimmedText(row.lastPrompt) ?? lastPrompt;
+    if (firstPrompt === null && isUserTextMessage(row) && !row.isMeta) {
+      const text = extractTextContent(row).trim();
+      // XML-wrapped rows (<command-name>/<local-command-caveat>) are CLI
+      // plumbing, not user input; the CLI's own firstPrompt scan (_hY) skips
+      // them, and the webview renders the derived title verbatim, so letting
+      // them through would leak internal markup into the header.
+      if (!text.startsWith('<')) {
+        firstPrompt = text;
+      }
+    }
+  }
+  return customTitle || aiTitle || summary || lastPrompt || firstPrompt || null;
+}
+
 /**
  * Build a paginated getSessionMessages response.
  *
@@ -407,7 +455,7 @@ function isTurnStart(message) {
  * markers removed).
  *
  * Response shape:
- *   { success, messages, fromTurn, toTurn, totalTurns, hasMore, cursorReset }
+ *   { success, messages, sessionTitle, fromTurn, toTurn, totalTurns, hasMore, cursorReset }
  *
  * cursorReset=true means the requested beforeTurn exceeds the current
  * history length (e.g. new messages arrived since the client computed its
@@ -431,7 +479,9 @@ export function buildSessionMessagesPagePayload(sessionFile, beforeTurn = null, 
   }
 
   const content = readFileSync(sessionFile, 'utf8');
-  const messages = selectConversationChain(parseJsonlContent(content).messages)
+  const parsed = parseJsonlContent(content);
+  const sessionTitle = extractSessionTitle(parsed.messages);
+  const messages = selectConversationChain(parsed.messages)
     .filter(msg => !(msg.type === 'user' && isInterruptionMarker(msg)))
     .flatMap(msg => {
       if (msg.type === 'attachment' && extractTaskNotificationXml(msg) !== null) {
@@ -493,6 +543,7 @@ export function buildSessionMessagesPagePayload(sessionFile, beforeTurn = null, 
   return {
     success: true,
     messages: pageMessages,
+    sessionTitle,
     fromTurn,
     toTurn,
     totalTurns,

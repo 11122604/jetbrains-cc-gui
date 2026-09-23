@@ -104,6 +104,8 @@ export interface CodexHistoryPageInfo {
   hasMore: boolean;
   loadedMessageCount: number;
   cursorReset?: boolean;
+  /** Claude only: CLI-derived session title carried with the page payload. */
+  sessionTitle?: string | null;
 }
 
 export interface TodoItem {

@@ -36,6 +36,7 @@ describe('useWindowCallbacks integration', () => {
     setHistoryData: vi.fn(),
     setCurrentSessionId: vi.fn(),
     setCustomSessionTitle: vi.fn(),
+    setRestoredSessionTitle: vi.fn(),
     setUsagePercentage: vi.fn(),
     setUsageUsedTokens: vi.fn(),
     setUsageMaxTokens: vi.fn(),

@@ -308,14 +308,17 @@ public class SessionMessageOrchestrator {
                 claudeHistoryFromTurn = page.get("fromTurn").getAsInt();
                 claudeHistoryTotalTurns = page.get("totalTurns").getAsInt();
                 claudeHistoryHasMore = page.get("hasMore").getAsBoolean();
+                String sessionTitle = extractSessionTitle(page);
                 LOG.info("Loaded Claude session page: " + messages.size() + " messages"
                         + ", fromTurn=" + claudeHistoryFromTurn
                         + ", toTurn=" + page.get("toTurn").getAsInt()
                         + ", totalTurns=" + claudeHistoryTotalTurns
                         + ", hasMore=" + claudeHistoryHasMore);
-                // Notify frontend of pagination metadata
+                // Notify frontend of pagination metadata (plus the CLI-derived
+                // session title so the header does not depend on this page's
+                // message span)
                 callbackFacade.notifyClaudeHistoryPageInfo(sessionId, claudeHistoryFromTurn, claudeHistoryTotalTurns, claudeHistoryHasMore,
-                        page.has("cursorReset") && page.get("cursorReset").getAsBoolean());
+                        page.has("cursorReset") && page.get("cursorReset").getAsBoolean(), sessionTitle);
                 return messages;
             }
         } catch (Exception e) {
@@ -382,7 +385,8 @@ public class SessionMessageOrchestrator {
                             + ", hasMore=" + claudeHistoryHasMore);
                 }
                 callbackFacade.notifyMessageUpdate(state.getMessages());
-                callbackFacade.notifyClaudeHistoryPageInfo(sessionId, claudeHistoryFromTurn, claudeHistoryTotalTurns, claudeHistoryHasMore, cursorReset);
+                callbackFacade.notifyClaudeHistoryPageInfo(sessionId, claudeHistoryFromTurn, claudeHistoryTotalTurns, claudeHistoryHasMore, cursorReset,
+                        extractSessionTitle(page));
             } catch (Exception e) {
                 LOG.error("Failed to load earlier Claude history page: " + e.getMessage(), e);
                 callbackFacade.notifyClaudeHistoryPageError(sessionId, e.getMessage());
@@ -416,6 +420,17 @@ public class SessionMessageOrchestrator {
             }
         }
         return count;
+    }
+
+    /**
+     * Read the CLI-derived session title carried by a page payload, or null
+     * when the bridge did not include one (legacy payload shape or empty
+     * transcript); keeps both pagination notify sites on one extraction path.
+     */
+    private static String extractSessionTitle(JsonObject page) {
+        return page.has("sessionTitle") && !page.get("sessionTitle").isJsonNull()
+                ? page.get("sessionTitle").getAsString()
+                : null;
     }
 
     private boolean ownsHistoryLoad(Object token, String sessionId, String cwd, String provider) {

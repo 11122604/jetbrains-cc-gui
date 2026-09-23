@@ -127,6 +127,7 @@ export const useAppChatController = ({
   const {
     currentSessionId, setCurrentSessionId,
     customSessionTitle, setCustomSessionTitle,
+    restoredSessionTitle, setRestoredSessionTitle,
     historyData, setHistoryData,
     currentSessionIdRef, customSessionTitleRef,
   } = useSession();
@@ -245,6 +246,7 @@ export const useAppChatController = ({
     closeContextUsageDialog,
     customSessionTitleRef, currentSessionIdRef, updateHistoryTitle, applyHistoryTitleLocal,
     setCustomSessionTitle,
+    setRestoredSessionTitle,
     setPermissionDialogTimeoutSeconds,
     clearQueuedMessages,
   });
@@ -341,7 +343,8 @@ export const useAppChatController = ({
     fileChangeMgmt,
     filteredFileChanges, subagents, globalTodos, rewindableMessages, sessionTitle,
   } = useChatComputations({
-    t, messages, mergedMessages, subagentHistories, customSessionTitle, streamingActive, currentProvider,
+    t, messages, mergedMessages, subagentHistories, customSessionTitle, restoredSessionTitle,
+    streamingActive, currentProvider,
     currentSessionId, currentSessionIdRef,
     getMessageText, getContentBlocks,
   });

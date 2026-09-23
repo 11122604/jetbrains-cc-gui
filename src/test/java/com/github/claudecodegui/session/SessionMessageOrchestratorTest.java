@@ -837,7 +837,7 @@ public class SessionMessageOrchestratorTest {
         historyAccess.messagesPage = createHistoryPage(
                 List.of(createProviderMessage("user", "older question"),
                         createProviderMessage("assistant", "older answer")),
-                0, 2, 4, true, false);
+                0, 2, 4, true, false, "Renamed in CLI");
 
         SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
                 state, new MessageParser(), callbackFacade, historyAccess, (used, max) -> { }, 0, 0);
@@ -849,7 +849,7 @@ public class SessionMessageOrchestratorTest {
         assertEquals("older question", messages.get(0).content);
         assertEquals("older answer", messages.get(1).content);
         assertEquals("newer question", messages.get(2).content);
-        assertEquals(List.of("session-page|0|4|true|false"), callback.claudeHistoryPageInfos);
+        assertEquals(List.of("session-page|0|4|true|false|Renamed in CLI"), callback.claudeHistoryPageInfos);
         assertTrue(callback.claudeHistoryPageErrors.isEmpty());
     }
 
@@ -883,7 +883,7 @@ public class SessionMessageOrchestratorTest {
         assertEquals(2, messages.size());
         assertEquals("live question", messages.get(0).content);
         assertEquals("live answer", messages.get(1).content);
-        assertEquals(List.of("session-page|0|2|false|true"), callback.claudeHistoryPageInfos);
+        assertEquals(List.of("session-page|0|2|false|true|null"), callback.claudeHistoryPageInfos);
     }
 
     @Test
@@ -914,6 +914,11 @@ public class SessionMessageOrchestratorTest {
 
     private static JsonObject createHistoryPage(List<JsonObject> messages, int fromTurn, int toTurn,
                                                 int totalTurns, boolean hasMore, boolean cursorReset) {
+        return createHistoryPage(messages, fromTurn, toTurn, totalTurns, hasMore, cursorReset, null);
+    }
+
+    private static JsonObject createHistoryPage(List<JsonObject> messages, int fromTurn, int toTurn,
+                                                int totalTurns, boolean hasMore, boolean cursorReset, String sessionTitle) {
         JsonObject page = new JsonObject();
         page.addProperty("success", true);
         JsonArray array = new JsonArray();
@@ -926,6 +931,9 @@ public class SessionMessageOrchestratorTest {
         page.addProperty("totalTurns", totalTurns);
         page.addProperty("hasMore", hasMore);
         page.addProperty("cursorReset", cursorReset);
+        if (sessionTitle != null) {
+            page.addProperty("sessionTitle", sessionTitle);
+        }
         return page;
     }
 
@@ -987,8 +995,8 @@ public class SessionMessageOrchestratorTest {
         }
 
         @Override
-        public void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset) {
-            claudeHistoryPageInfos.add(sessionId + "|" + fromTurn + "|" + totalTurns + "|" + hasMore + "|" + cursorReset);
+        public void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset, String sessionTitle) {
+            claudeHistoryPageInfos.add(sessionId + "|" + fromTurn + "|" + totalTurns + "|" + hasMore + "|" + cursorReset + "|" + sessionTitle);
         }
 
         @Override

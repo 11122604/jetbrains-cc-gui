@@ -392,7 +392,7 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
     }
 
     @Override
-    public void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset) {
+    public void onClaudeHistoryPageInfo(String sessionId, int fromTurn, int totalTurns, boolean hasMore, boolean cursorReset, String sessionTitle) {
         if (isInactive()) {
             return;
         }
@@ -400,9 +400,10 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
             if (isInactive()) {
                 return;
             }
+            String titleJson = sessionTitle != null ? "\"" + JsUtils.escapeJs(sessionTitle) + "\"" : "null";
             String json = String.format(
-                "{\"sessionId\":\"%s\",\"fromTurn\":%d,\"totalTurns\":%d,\"hasMore\":%b,\"cursorReset\":%b}",
-                JsUtils.escapeJs(sessionId), fromTurn, totalTurns, hasMore, cursorReset
+                "{\"sessionId\":\"%s\",\"fromTurn\":%d,\"totalTurns\":%d,\"hasMore\":%b,\"cursorReset\":%b,\"sessionTitle\":%s}",
+                JsUtils.escapeJs(sessionId), fromTurn, totalTurns, hasMore, cursorReset, titleJson
             );
             jsTarget.callJavaScript("claudeHistoryPageInfo", JsUtils.escapeJs(json));
         });

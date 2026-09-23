@@ -9,6 +9,7 @@ import type {
   ToolResultBlock,
 } from '../types';
 import type { GetToolResultRawFn } from '../contexts/SubagentContext';
+import type { RestoredSessionTitle } from '../contexts/SessionContext';
 import type { RewindableMessage } from '../components/RewindSelectDialog';
 import { formatTime } from '../utils/helpers';
 import {
@@ -21,6 +22,7 @@ import {
   computeStatusScopeMessages,
   finalizeSubagentsForSettledTurn,
   finalizeTodosForSettledTurn,
+  isToolResultOnlyUserMessage,
   selectLatestSubagentTurn,
   sliceLatestConversationTurn,
 } from '../utils/turnScope';
@@ -37,6 +39,7 @@ interface UseChatComputationsParams {
   mergedMessages: ClaudeMessage[];
   subagentHistories: Record<string, SubagentHistoryResponse>;
   customSessionTitle: string | null;
+  restoredSessionTitle: RestoredSessionTitle | null;
   streamingActive: boolean;
   currentProvider: string;
   currentSessionId: string | null;
@@ -63,6 +66,58 @@ function sliceHasToolUse(
     }
   }
   return false;
+}
+
+/**
+ * Resolve the title shown in the session header, in priority order: a
+ * user-set custom title, the CLI-derived title carried by a history page,
+ * then the first real prompt among the loaded messages. The CLI title matters
+ * for paginated history: a page may not span the session's first prompt, so
+ * prompt-derivation alone would surface a mid-conversation row.
+ */
+export function deriveSessionTitle(params: {
+  customSessionTitle: string | null;
+  restoredSessionTitle: RestoredSessionTitle | null;
+  currentSessionId: string | null;
+  messages: ClaudeMessage[];
+  fallbackTitle: string;
+  getMessageText: (message: ClaudeMessage) => string;
+}): string {
+  const {
+    customSessionTitle,
+    restoredSessionTitle,
+    currentSessionId,
+    messages,
+    fallbackTitle,
+    getMessageText,
+  } = params;
+  if (customSessionTitle) return customSessionTitle;
+  // Only a title keyed to the session on screen may show; a stale entry from a
+  // previously opened session falls through to the message-derived title.
+  if (restoredSessionTitle && restoredSessionTitle.sessionId === currentSessionId) {
+    return restoredSessionTitle.title;
+  }
+  if (messages.length === 0) return fallbackTitle;
+  // Pick the first REAL prompt: skip meta/caveat messages and anything whose
+  // text is raw internal XML (e.g. <local-command-caveat>) so the tag is
+  // never leaked as the session title.
+  let text = '';
+  for (const message of messages) {
+    if (message.type !== 'user') continue;
+    const raw = message.raw;
+    if (raw && typeof raw === 'object' && raw.isMeta === true) continue;
+    // Tool-result carriers are CLI-injected rows, not user input; a paginated
+    // page can start with one, and it must never become the session title.
+    if (isToolResultOnlyUserMessage(message)) continue;
+    const candidate = getMessageText(message).trim();
+    if (!candidate) continue;
+    if (candidate.startsWith('<')) continue;
+    if (containsAnyTag(candidate, INTERNAL_METADATA_TAGS) || hasTaskNotificationTag(candidate)) continue;
+    text = candidate;
+    break;
+  }
+  if (!text) return fallbackTitle;
+  return text.length > 15 ? `${text.substring(0, 15)}...` : text;
 }
 
 export function deriveTodosForTurn(
@@ -130,6 +185,7 @@ export function useChatComputations({
   mergedMessages,
   subagentHistories,
   customSessionTitle,
+  restoredSessionTitle,
   streamingActive,
   currentProvider,
   currentSessionId,
@@ -304,27 +360,14 @@ export function useChatComputations({
     return result;
   }, [mergedMessages, currentProvider, canRewindFromMessageIndex, getMessageText]);
 
-  const sessionTitle = useMemo(() => {
-    if (customSessionTitle) return customSessionTitle;
-    if (messages.length === 0) return t('common.newSession');
-    // Pick the first REAL prompt: skip meta/caveat messages and anything whose
-    // text is raw internal XML (e.g. <local-command-caveat>) so the tag is
-    // never leaked as the session title.
-    let text = '';
-    for (const message of messages) {
-      if (message.type !== 'user') continue;
-      const raw = message.raw;
-      if (raw && typeof raw === 'object' && raw.isMeta === true) continue;
-      const candidate = getMessageText(message).trim();
-      if (!candidate) continue;
-      if (candidate.startsWith('<')) continue;
-      if (containsAnyTag(candidate, INTERNAL_METADATA_TAGS) || hasTaskNotificationTag(candidate)) continue;
-      text = candidate;
-      break;
-    }
-    if (!text) return t('common.newSession');
-    return text.length > 15 ? `${text.substring(0, 15)}...` : text;
-  }, [customSessionTitle, messages, t, getMessageText]);
+  const sessionTitle = useMemo(() => deriveSessionTitle({
+    customSessionTitle,
+    restoredSessionTitle,
+    currentSessionId,
+    messages,
+    fallbackTitle: t('common.newSession'),
+    getMessageText,
+  }), [customSessionTitle, restoredSessionTitle, currentSessionId, messages, t, getMessageText]);
 
   return {
     findToolResult,
