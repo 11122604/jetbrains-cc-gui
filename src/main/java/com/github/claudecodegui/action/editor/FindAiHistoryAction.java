@@ -53,6 +53,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -163,7 +164,7 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
 
         // Mutable view state. The selected agent drives everything: the project scope,
         // the result list, and whether "Choose Projects" is usable.
-        final AgentType[] selectedAgentHolder = { AgentType.CLAUDE };
+        final AtomicReference<AgentType> selectedAgentHolder = new AtomicReference<>(AgentType.CLAUDE);
         final List<String> scope = new ArrayList<>(initialScope);
 
         JLabel scopeLabel = new JLabel(buildScopeText(basePath, scope));
@@ -179,14 +180,14 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
         // Re-search within the current scope and refresh the list in place. Unlike the
         // agent switch below, changing only projects never clears the agent.
         chooseLink.addHyperlinkListener(e -> {
-            if (selectedAgentHolder[0] == null) {
+            if (selectedAgentHolder.get() == null) {
                 return; // No agent selected - projects are not available.
             }
             chooseProjects(project, basePath, new ArrayList<>(scope), selectedRoots -> {
                 scope.clear();
                 scope.addAll(selectedRoots);
                 scopeLabel.setText(buildScopeText(basePath, scope));
-                refreshList(model, selectedText, scope, selectedAgentHolder[0]);
+                refreshList(model, selectedText, scope, selectedAgentHolder.get());
             });
         });
 
@@ -261,8 +262,8 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
     private void applyAgentSelection(Project project, String selectedText, String basePath,
                                      AgentType selected, DefaultListModel<JsonObject> model,
                                      List<String> scope, JLabel scopeLabel, HyperlinkLabel chooseLink,
-                                     AgentType[] selectedAgentHolder) {
-        selectedAgentHolder[0] = selected;
+                                     AtomicReference<AgentType> selectedAgentHolder) {
+        selectedAgentHolder.set(selected);
 
         if (selected == null) {
             // No agent: nothing to search and no projects to choose from.
