@@ -109,8 +109,7 @@
 
 **每个工作目录是独立的一项**，父目录和子目录之间互不影响（`E:\projects2023\crawler` 与 `E:\projects2023\question\question-crawler` 可以同时勾选，各自的结果都完整）。
 
-> 📷 图 3：Select Projects to Search 多选对话框
-> <img width="1200" height="595" alt="38e93832a698c726075d6b27e556e441_compress" src="https://github.com/user-attachments/assets/78292262-9b08-4d29-85c0-b94220211a73" />
+> 📷 图 2：Select Projects to Search 多选对话框
 
 
 ### 4. 跳转到历史对话
