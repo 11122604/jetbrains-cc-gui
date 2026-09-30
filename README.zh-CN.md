@@ -1,168 +1,192 @@
-<div align="center">
+# 功能提案：Find AI Edit History（从代码反查 AI 编辑历史）
 
-# CC GUI（Claude or Codex）
+## 一、要解决的问题
 
-> 原名：Claude Code GUI
+用 CC GUI 写代码时，AI 改完一段代码就过去了。过几天再看这段代码，会遇到三个问题：
 
-<img width="120" alt="Image" src="./docs/images/idea-claude-code-gui-logo.png" />
+1. **不知道是谁改的** —— 是人改的，还是某个会话里 AI 改的？
+2. **不知道当时为什么这么改** —— 当时的讨论、约束、被否掉的方案都在对话里
+3. **找不到那次对话** —— 历史会话按时间排列，几十上百个，靠翻根本找不回
 
-**简体中文** · [English](./README.md)
+现有能力只能从「对话」出发（打开某个会话看它改了什么），没法**从代码出发**回看历史。
 
-<a href="https://trendshift.io/repositories/24968" target="_blank"><img src="https://trendshift.io/api/badge/repositories/24968" alt="zhukunpenglinyutong%2Fjetbrains-cc-gui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+## 二、典型场景与效率提升
 
-![][github-contributors-shield] ![][github-forks-shield] ![][github-stars-shield] ![][github-issues-shield] ![][github-mit]
+### 场景 1：需求续写（一个功能分多轮做完）
 
-</div>
+一个功能很少一次做完：第一轮搭框架，第二轮补校验，第三轮调交互。**每一轮往往是一个独立的会话**。
 
-> 为规避Claude商标风险，本项目名称修改为CC GUI（原名：Claude Code GUI）；并更换LOGO减少中国元素；对于安全方面，后续每个小版本发版前都进行 /security-review 审查，每隔10个小版本进行一次整体的 claude-code-security 审查
+接到「继续完善 XX 功能」时，第一件事是搞清楚**上次做到哪了、当时的思路是什么**。
 
-一个功能强大的 IntelliJ IDEA 插件，为开发者提供 **Claude Code** 和 **OpenAI Codex** 双 AI 工具的可视化操作界面，让 AI 辅助编程变得更加高效和直观。
+| | 以前 | 现在 |
+|---|---|---|
+| 做法 | 在历史会话列表里按时间猜「上次做这个功能的是哪个会话」，逐个点进去翻 | 选中上一轮写的那段代码 → 右键 → 直接命中 |
+| 耗时 | **找不到就只能重读代码反推**，或干脆重做一遍 | **几秒**跳到上一轮对话，带着完整上下文接着聊 |
+| 结果 | 容易重复实现已有逻辑，或推翻上一轮有意的设计 | 沿着上轮思路往下走，方案连贯，不用重新建立上下文 |
 
-<img width="850" alt="Image" src="/docs/img/banner.png" />
+**这是 AI 辅助开发最典型的工作方式**：代码是分轮的产物，但人记不住每一轮的边界。
 
----
+### 场景 2：问题排查（Bug 调试）
 
-## 插件下载
+某段代码行为不对，需要判断是**哪次改动**引入的。
 
-[CC GUI（Claude or Codex） 下载](https://plugins.jetbrains.com/plugin/29342-cc-gui-claude-or-codex-)
+调试器只能告诉你「现在是什么」，告诉不了你「为什么变成这样」。
 
----
+| | 以前 | 现在 |
+|---|---|---|
+| 做法 | 加日志、打断点、看 `git log`（提交信息常常只有一行 `fix: xxx`），实在不行二分回滚 | 选中可疑代码 → 右键，列出所有改过它的会话 |
+| 耗时 | **问题越绕、改动轮次越多，耗时越长** | **几秒**得到几次候选改动，逐个排除 |
+| 结果 | 常靠猜，可能修了症状没修病因 | 直接看每次改动的**动机与约束**，判断哪次引入的问题 |
 
-## 核心特性
+线上问题排查同理：定位到问题代码后，同样能立刻回看它的改动背景，而不是只靠 `git blame` 的一行提交信息。
 
-### 双 AI 引擎支持
-- **Claude Code** - Anthropic 官方 AI 编程助手，支持 Opus 4.5 等多模型
-- **OpenAI Codex** - OpenAI 强大的代码生成引擎
+### 场景 3：接手别人（或半年前的自己）写的代码
 
-### 智能对话功能
-- 上下文感知的 AI 编程助手
-- 支持 @文件引用，精准指定代码上下文
-- 图片发送支持，可视化描述需求
-- 对话回退功能，灵活调整对话历史
-- 强化提示词，优化 AI 理解能力
+看到一段绕的写法，想确认是刻意为之还是历史包袱。
 
-### Agent 智能体
-- 内置 Agent 系统，自动化执行复杂任务
-- Skills 斜杠命令系统（/init, /review 等）
-- MCP 服务器支持，扩展 AI 能力边界
+| | 以前 | 现在 |
+|---|---|---|
+| 做法 | 打开历史会话列表，逐个点进去 Ctrl+F 搜这段代码 | 选中那段绕的代码 → 右键 → 点结果 |
+| 耗时 | **几分钟到十几分钟**，会话多时经常翻一半就放弃 | **几秒** |
+| 结果 | 常常「算了，就这么改吧」，可能推翻别人有意的设计 | 直接看到当时的讨论和约束，改之前心里有数 |
 
-### 开发者体验
-- 完善的权限管理和安全控制
-- 代码 DIFF 对比功能
-- 文件跳转和代码导航
-- 深色/浅色主题切换
-- 字体缩放和 IDE 字体同步
-- 国际化支持（中/英文自动切换）
+### 场景 4：跨项目找同一段逻辑
 
-### 会话管理
-- 历史会话记录和搜索
-- 会话收藏功能
-- 消息导出支持
-- 供应商管理（兼容 cc-switch）
-- 使用统计分析
+同一段工具代码在多个项目里被复制过、各改各的，想知道「另一个项目里当时是怎么处理的」。
 
----
+| | 以前 | 现在 |
+|---|---|---|
+| 做法 | 切换项目 → 打开那个项目的历史 → 靠时间顺序翻 | `Choose Projects` 勾上几个工作目录，一次搜完 |
+| 耗时 | **需要先切换到对应项目**，跨项目基本不可行 | **同一弹窗内完成**，各项目结果独立展示 |
 
-## 项目状态
+### 场景 5：多 agent 混用的项目
 
-项目处于活跃开发阶段，代码持续更新中。版本历史和迭代进度请阅读 [CHANGELOG.md](CHANGELOG.md)
+同一个项目里 Claude Code、Codex、Grok 等多个 agent 都用过，改动来源分散。
 
----
+| | 以前 | 现在 |
+|---|---|---|
+| 做法 | 不知道要去看哪个 agent 的历史，只能逐个翻 | 勾选对应 agent，列表随之刷新；也可以全勾，一次看全 |
+| 耗时 | **成倍增加**（agent 数量 × 会话数量） | **一次查询** |
 
-### 贡献代码
+### 效率提升总结
 
-贡献代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)
+- **从「翻」到「搜」**：检索入口从「按时间翻会话」变成「按代码搜会话」，定位成本从**分钟级降到秒级**
+- **从「猜」到「看」**：改动动机不再依赖作者把 commit message 写清楚，而是直接回到当时对话的上下文
+- **分轮开发不断线**：需求续写时不用重读代码重建上下文，能接着上一轮的讨论继续
+- **从「单项目」到「跨项目」**：原先跨项目回看基本不可行，现在一次多选即可
+- **从「单 agent」到「全 agent」**：多 agent 项目的回看成本从乘法变成加法
 
----
+## 三、功能是什么
+
+在编辑器里**选中一段代码 → 右键 → Find AI Edit History**，列出所有改过这段代码的历史会话，点一下直接跳到那次对话里对应的位置。
+
+一句话：**把 AI 编辑历史变成代码的「git blame」**。
+
+## 四、使用方式
+
+### 1. 选中代码，右键调用
+
+> 📷 图 1：编辑器里选中代码后，右键菜单中的 **Find AI Edit History**
+> <img width="937" height="518" alt="71729614d414aa6fbb4557ef34b1e7f4_compress" src="https://github.com/user-attachments/assets/27baa1d0-4ad7-483f-8f4c-3b23c25826c0" />
 
 
-## 本地开发调试
+### 2. 查看命中列表
 
-### 1.安装前端依赖
+弹窗分三段：
 
-```bash
-cd webview
-npm install
+- **Scope**：当前搜索范围（默认「当前项目」），右侧 `Choose Projects` 可改
+- **Agent 选择**：Claude Code / Codex / DSH / Grok / Kimi / MiniMax / OMP / OpenCode / Pi
+  勾选哪个就看哪个 agent 的编辑历史，切换即刷新列表
+- **结果列表**：每条两行 —— 文件名 + 命中行范围，以及代码预览
+
+> 📷 图 2：弹窗全貌（Scope 行 + Agent 选择行 + 命中列表）
+> <img width="1200" height="595" alt="38e93832a698c726075d6b27e556e441_compress" src="https://github.com/user-attachments/assets/185de61c-382a-41c9-b67c-8655e582e577" />
+
+
+### 3. 跨项目搜索
+
+默认只搜当前项目；需要跨项目时点 `Choose Projects`，多选工作目录后确认。
+
+**每个工作目录是独立的一项**，父目录和子目录之间互不影响（`E:\projects2023\crawler` 与 `E:\projects2023\question\question-crawler` 可以同时勾选，各自的结果都完整）。
+
+> 📷 图 3：Select Projects to Search 多选对话框
+> <img width="1200" height="595" alt="38e93832a698c726075d6b27e556e441_compress" src="https://github.com/user-attachments/assets/78292262-9b08-4d29-85c0-b94220211a73" />
+
+
+### 4. 跳转到历史对话
+
+双击命中的条目，右侧自动新开标签页载入那次会话，并**滚动到 + 高亮**被修改的那段代码所在的消息。
+
+> 📷 图 4：右侧新开的标签页中，对话已定位并高亮到对应位置
+> <img width="1134" height="597" alt="28d4852988bfe4237960fe4770416b36_compress" src="https://github.com/user-attachments/assets/01e70471-a0cc-42c9-8a44-411428806518" />
+
+
+## 五、核心特性
+
+| 特性 | 说明 |
+|---|---|
+| **按代码反查** | 选中任意代码片段，找出改过它的所有会话 |
+| **多 agent 支持** | 覆盖 Claude Code / Codex / DSH / Grok / Kimi / MiniMax / OMP / OpenCode / Pi |
+| **精确定位** | 跳到对话里那条消息，并定位到被改的那一行 |
+| **自动展开** | 目标在折叠的历史里时，自动展开后重试，不会「跳了个寂寞」 |
+| **跨项目** | 项目多选，各项目结果独立不串 |
+| **后台索引** | 项目打开时后台增量建索引，状态栏显示进度，不阻塞操作 |
+| **零配置** | 数据源就是 CC GUI 自己的会话记录，不需要额外开启什么 |
+
+## 六、技术实现
+
+### 数据来源
+
+索引**直接读取 CC GUI / Claude Code 自己的会话落盘文件**：
+
+```
+~/.claude/projects/<编码后的cwd>/<sessionId>.jsonl
 ```
 
-### 2.安装ai-bridge依赖
+逐行解析 assistant 消息里 `Edit` / `Write` 工具的调用，提取「文件路径 + 改动内容 + 所属会话」，落到一个本地 SQLite：
 
-```bash
-cd ai-bridge
-npm install
+```
+~/.codemoss/edit_snippets.db
 ```
 
-### 3.调试插件
+**不联网、不上传，纯本地索引。**
 
-在 IDEA 中运行：
-```bash
-./gradlew clean runIde
-```
+### 索引策略
 
-### 4.构建插件
+- **增量**：按文件 `mtime + size` 跳过没变的会话文件，只有内容变化才重扫
+- **格式版本**：索引格式变更时（`PRAGMA user_version`）自动清空重建，避免旧数据残留
+- **后台执行**：在应用级线程池构建，状态栏显示「索引中… / 已索引 N 条」，不阻塞 EDT
 
-```sh
-./gradlew clean buildPlugin
+### 查询与定位
 
-# 生成的插件包会在 build/distributions/ 目录下（包体大约40MB）
-```
+1. 选中的代码按行归一化后，逐行在索引里做 `LIKE` 匹配
+2. 结果按「命中行数 + 是否当前文件」加权排序
+3. 点击后新开标签页，通过 bridge 把 `sessionId / provider / cwd / messageId` 传给前端
+4. 前端在渲染出的消息节点里按 `data-message-uuid` → `data-message-id` 依次匹配；都失败则展开折叠的历史重试
 
----
+### 实现涉及的文件
 
-## License
+| 模块 | 文件 |
+|---|---|
+| 索引 | `util/codeindex/` —— `EditSnippetExtractor`（提取）、`EditSnippetIndexer`（SQLite）、`ClaudeSnippetIndexBuilder`（构建）、`SnippetIndexHolder`（调度）、`SnippetSearchService`（搜索） |
+| 交互 | `action/editor/FindAiHistoryAction`（入口 + 弹窗）、`ProjectPickerDialog`（项目多选）、`AgentType`（agent 枚举） |
+| 前端 | `webview/src/utils/messageFocus.ts`（定位）、`App.tsx`（bridge 接线）、`styles/app.less`（高亮样式） |
+| 注册 | `plugin.xml` —— action + 状态栏 widget 文案 |
 
-MIT
+## 七、兼容性与影响面
 
----
+- **不改动**任何现有功能的代码路径，只在 `plugin.xml` 新增一个 action 与一组 bundle 文案
+- 索引库独立于插件其他数据，删掉 `~/.codemoss/edit_snippets.db` 即可完全重置
+- 索引在后台线程执行，项目打开时的额外开销仅一次增量扫描
 
-## 贡献者列表
+## 八、测试情况
 
-感谢所有帮助 IDEA-Claude-Code-GUI 变得更好的贡献者！
+- **单元测试**：`messageFocus` 定位逻辑（含 UUID 优先、id 回退、兜底、工具块展开等用例）；`EditSnippetExtractor` / `EditSnippetIndexer` 的提取与入库
+- **构建**：`./gradlew buildPlugin` 通过（含 checkstyle）
+- **手工验证**：在真实多项目环境下验证过跨项目搜索、agent 切换、跳转定位与高亮
 
-<a href="https://github.com/zhukunpenglinyutong/jetbrains-cc-gui/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=zhukunpenglinyutong/jetbrains-cc-gui" alt="Contributors" />
-</a>
+## 九、后续可以做的事（未包含在本提案内）
 
----
-
-## 赞助支持
-
-如果这个项目对你有帮助，想请作者吃顿肯德基（KFC）或者喝杯咖啡，都是可以的~
-
-[查看赞助者列表 →](./SPONSORS.md)
-
----
-
-## AtomGit
-
-https://atomgit.com/zhukunpenglinyutong/idea-claude-code-gui
-
----
-
-## 友链
-
-感谢 [LINUX DO](https://linux.do/) 用户的支持与反馈
-
-感谢[AtomGit](https://atomgit.com/zhukunpenglinyutong/idea-claude-code-gui)平台G-Star认证
-
----
-
-## 致谢
-
-最近有很多博主自发推荐本项目，心中十分感激，再次感谢《沉默的王二》《macrozheng》《JavaGuide》《Java知音》《鲲鹏talk 公众号》《程序员青戈》等博主推荐本项目，我会继续努力迭代，让大家用起来更舒适。
-
----
-
-## Star History
-
-[![Star History](https://star-history.dera.page/svg?repos=zhukunpenglinyutong/jetbrains-cc-gui&type=date&legend=top-left)](https://star-history.dera.page/#zhukunpenglinyutong/jetbrains-cc-gui&type=date&legend=top-left)
-
-<!-- LINK GROUP -->
-
-[github-contributors-shield]: https://img.shields.io/github/contributors/zhukunpenglinyutong/idea-claude-code-gui?color=c4f042&labelColor=black&style=flat-square
-[github-forks-shield]: https://img.shields.io/github/forks/zhukunpenglinyutong/idea-claude-code-gui?color=8ae8ff&labelColor=black&style=flat-square
-[github-issues-link]: https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues
-[github-issues-shield]: https://img.shields.io/github/issues/zhukunpenglinyutong/idea-claude-code-gui?color=ff80eb&labelColor=black&style=flat-square
-[github-license-link]: https://github.com/zhukunpenglinyutong/idea-claude-code-gui/blob/main/LICENSE
-[github-stars-shield]: https://img.shields.io/github/stars/zhukunpenglinyutong/idea-claude-code-gui?color=ffcb47&labelColor=black&style=flat-square
-[github-mit]: https://img.shields.io/badge/github-MIT-blue?logo=github
+- 在搜索结果中直接展示「这次改动前后 diff 的摘要」
+- 支持从对话里反向标出「这条消息改了哪几个文件、哪些行」
+- 索引可选排除某些项目 / 会话
