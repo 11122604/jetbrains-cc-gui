@@ -1,165 +1,192 @@
-<div align="center">
+# Feature Proposal: Find AI Edit History
 
-# CC GUI（Claude or Codex）
+> Reverse lookup: from a piece of code back to the AI conversations that edited it.
 
-> Originally Claude Code GUI
+## 1. The Problem
 
-<img width="120" alt="Image" src="./docs/images/idea-claude-code-gui-logo.png" />
+When you write code with CC GUI, the AI edits a region and moves on. Come back to that code a few days later and three questions come up:
 
-**English** · [简体中文](./README.zh-CN.md)
+1. **Who changed this?** A human, or the AI in some session?
+2. **Why was it changed this way?** The reasoning, the constraints, the rejected alternatives — all of it lives in that conversation.
+3. **Which conversation was it?** Sessions are ordered by time. With dozens or hundreds of them, scrolling back is hopeless.
 
-<a href="https://trendshift.io/repositories/24968" target="_blank"><img src="https://trendshift.io/api/badge/repositories/24968" alt="zhukunpenglinyutong%2Fjetbrains-cc-gui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+Today the plugin can only go one way: **from a conversation to the code it changed**. There is no way to go **from code back to the conversation**.
 
-![][github-contributors-shield] ![][github-forks-shield] ![][github-stars-shield] ![][github-issues-shield] ![][github-mit]
+## 2. Scenarios and the Efficiency Gain
 
-</div>
+### Scenario 1 — Continuing a feature across several sessions
 
-> To mitigate Claude trademark risks, this project has been renamed to CC GUI (originally Claude Code GUI). The logo has also been updated to reduce Chinese-specific elements. Regarding security, a        
-  /security-review audit will be conducted before each minor version release, and a comprehensive claude-code-security audit will be performed every 10 minor versions. 
+A feature is rarely built in one pass: the first session scaffolds it, the second adds validation, the third reworks the interaction. **Each round tends to be its own session.**
 
-A powerful IntelliJ IDEA plugin that provides a visual interface for **Claude Code** and **OpenAI Codex** dual AI tools, making AI-assisted programming more efficient and intuitive.
+When you pick up "continue working on X", the first thing you need is *where the previous round left off, and why.*
 
-<img width="850" alt="Image" src="/docs/img/banner.png" />
+| | Before | After |
+|---|---|---|
+| How | Guess which session built this feature by timestamp, open them one by one | Select the code from the previous round → right-click → hit it directly |
+| Time | **If you can't find it, re-read the code and reverse-engineer the intent** — or just redo it | **Seconds** to land in the previous conversation, with full context intact |
+| Outcome | Re-implement logic that already exists, or undo a deliberate earlier decision | Continue along the same line of reasoning — **no need to rebuild the context** |
 
----
+**This is the most common way AI-assisted work actually happens**: the code is the product of several rounds, but nobody remembers where the boundaries were.
 
-## Installation
+### Scenario 2 — Debugging
 
-[CC GUI（Claude or Codex） Installation](https://plugins.jetbrains.com/plugin/29342-cc-gui-claude-or-codex-)
+A piece of code misbehaves and you need to know *which change* introduced it.
 
----
+A debugger tells you what the code does now. It cannot tell you why it became that way.
 
-## Key Features
+| | Before | After |
+|---|---|---|
+| How | Add logging, set breakpoints, read `git log` (often a single line like `fix: ...`), fall back to bisecting | Select the suspicious code → right-click, get every session that touched it |
+| Time | **The more tangled the bug and the more rounds of edits, the worse it gets** | **Seconds** to a short list of candidate changes |
+| Outcome | Guesswork; may fix the symptom and not the cause | Read the **motivation and constraints** behind each change and identify the culprit |
 
-### Dual AI Engine Support
-- **Claude Code** - Anthropic's official AI programming assistant, supporting Opus 4.5 and other models
-- **OpenAI Codex** - OpenAI's powerful code generation engine
+The same applies to production incidents: once you have located the offending code, you can immediately review why it changed instead of relying on a one-line commit message.
 
-### Intelligent Conversation
-- Context-aware AI coding assistant
-- @file reference support for precise code context
-- Image sending support for visual requirement description
-- Conversation rewind feature for flexible history adjustment
-- Enhanced prompts for better AI understanding
+### Scenario 3 — Inheriting code from someone else (or from yourself, six months ago)
 
-### Agent System
-- Built-in Agent system for automated complex tasks
-- Skills slash command system (/init, /review, etc.)
-- MCP server support to extend AI capabilities
+You find an oddly convoluted piece of code and want to know whether it is deliberate or just legacy baggage.
 
-### Developer Experience
-- Comprehensive permission management and security controls
-- Code DIFF comparison feature
-- File navigation and code jumping
-- Dark/Light theme switching
-- Font scaling and IDE font synchronization
-- Internationalization support (auto-switch between Chinese/English)
+| | Before | After |
+|---|---|---|
+| How | Open the session list, click through them one by one, Ctrl+F for the snippet | Select the code → right-click → pick a result |
+| Time | **Minutes to tens of minutes**; with many sessions people give up halfway | **Seconds** |
+| Outcome | "Whatever, I'll just rewrite it" — possibly discarding a deliberate decision | See the discussion and constraints up front, then decide |
 
-### Session Management
-- History session records and search
-- Session favorites
-- Message export support
-- Provider management (cc-switch compatible)
-- Usage statistics analysis
+### Scenario 4 — The same logic across projects
 
----
+A utility was copy-pasted into several projects and then diverged. You want to know how another project handled it.
 
-## Project Status
+| | Before | After |
+|---|---|---|
+| How | Switch projects → open that project's history → scroll by time | `Choose Projects`, tick the working directories, search once |
+| Time | **Requires switching projects first**; effectively impractical | **Done in the same popup**, results per project kept separate |
 
-The project is under active development with continuous updates. For version history and iteration progress, please read [CHANGELOG.md](CHANGELOG.md)
+### Scenario 5 — Projects that use several agents
 
----
+The same project has been worked on by Claude Code, Codex, Grok and others, so edits are scattered across providers.
 
-### Collaborative Contributing
+| | Before | After |
+|---|---|---|
+| How | No idea which agent's history to look at, so you go through them all | Tick the agents you care about and the list refreshes; tick all of them to see everything |
+| Time | **Multiplied** (agents × sessions) | **A single query** |
 
-For contributing guidelines, please read [CONTRIBUTING.md](CONTRIBUTING.md)
+### Summary of the efficiency gain
 
----
+- **From scrolling to searching** — the entry point moves from "browse sessions by time" to "search sessions by code"; locating a change drops from **minutes to seconds**
+- **From guessing to reading** — motivation no longer depends on how well the commit message was written; you go straight back to the conversation
+- **No break between rounds** — continuing a feature no longer means re-reading code to rebuild context
+- **From single-project to cross-project** — previously impractical, now a multi-select away
+- **From single-agent to all-agents** — the cost of looking back becomes additive instead of multiplicative
+
+## 3. What It Does
+
+Select a piece of code in the editor → right-click → **Find AI Edit History**. The plugin lists every session that ever edited that code; one click jumps to the matching point in that conversation.
+
+In one line: **git blame for AI edits.**
+
+## 4. How to Use It
+
+### 4.1 Select code, invoke from the context menu
+
+> 📷 Fig. 1 — **Find AI Edit History** in the editor context menu after selecting code
+> <img width="937" height="518" alt="71729614d414aa6fbb4557ef34b1e7f4_compress" src="https://github.com/user-attachments/assets/75715f59-edc0-463f-8fa8-3fe496e88ad3" />
 
 
-## Local Development and Debugging
+### 4.2 Read the hit list
 
-### 1. Install Frontend Dependencies
+The popup has three parts:
 
-```bash
-cd webview
-npm install
+- **Scope** — the current search scope (the current project by default); `Choose Projects` changes it
+- **Agent selector** — Claude Code / Codex / DSH / Grok / Kimi / MiniMax / OMP / OpenCode / Pi.
+  Tick an agent to see its edits; the list refreshes immediately
+- **Result list** — two lines per entry: file name plus matched line range, and a code preview
+
+> 📷 Fig. 2 — The popup: scope row, agent selector row, and the hit list
+> <img width="1200" height="595" alt="38e93832a698c726075d6b27e556e441_compress" src="https://github.com/user-attachments/assets/3790c6df-91ec-443a-8477-bbd5ba5c079d" />
+
+### 4.3 Searching across projects
+
+By default only the current project is searched. Use `Choose Projects` to pick additional working directories.
+
+**Every working directory is an independent entry** — a parent and a child directory do not overlap. `E:\projects2023\crawler` and `E:\projects2023\question\question-crawler` can both be selected, and each returns its own complete set of results.
+
+> 📷 Fig. 2 — The "Select Projects to Search" multi-select dialog
+> 
+
+### 4.4 Jumping to the conversation
+
+Double-click a hit. A new tab opens on the right, loads that session, and **scrolls to and highlights** the message containing the edited code.
+
+> 📷 Fig. 4 — The conversation opened in a new tab, scrolled and highlighted to the matching message
+> <img width="1134" height="597" alt="28d4852988bfe4237960fe4770416b36_compress" src="https://github.com/user-attachments/assets/ea7aa4a5-0cb6-4aa7-9931-9bc998c1df5b" />
+
+
+## 5. Key Capabilities
+
+| Capability | Description |
+|---|---|
+| **Reverse lookup by code** | Select any snippet and find every session that edited it |
+| **Multi-agent** | Claude Code / Codex / DSH / Grok / Kimi / MiniMax / OMP / OpenCode / Pi |
+| **Precise landing** | Opens the exact message and highlights the edited line |
+| **Auto-expand** | If the target sits inside collapsed history, it expands and retries instead of silently doing nothing |
+| **Cross-project** | Multi-select projects; results per project stay separate |
+| **Background indexing** | Built incrementally when a project opens; progress shown in the status bar; never blocks the UI |
+| **Zero configuration** | The data source is CC GUI's own session transcripts — nothing to enable |
+
+## 6. Implementation
+
+### Data source
+
+The index reads **CC GUI / Claude Code's own session transcripts**:
+
+```
+~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
 ```
 
-### 2. Install ai-bridge Dependencies
+Each line is parsed for `Edit` / `Write` tool calls in assistant messages, extracting *file path + changed content + owning session* into a local SQLite database:
 
-```bash
-cd ai-bridge
-npm install
+```
+~/.codemoss/edit_snippets.db
 ```
 
-### 3. Debug Plugin
+**Fully local — no network access, nothing uploaded.**
 
-Run in IDEA:
-```bash
-./gradlew clean runIde
-```
+### Indexing strategy
 
-### 4. Build Plugin
+- **Incremental** — session files are skipped by `mtime + size`, so only changed files are re-scanned
+- **Format versioning** — when the index format changes (`PRAGMA user_version`), stale data is dropped and rebuilt
+- **Off the EDT** — built on an application-level thread pool, with progress in the status bar ("Indexing AI edits…" / "Indexed N snippets")
 
-```sh
-./gradlew clean buildPlugin
+### Query and jump
 
-# The generated plugin package will be in the build/distributions/ directory (package size approximately 40MB)
-```
+1. The selected code is normalized line by line and matched against the index with `LIKE`
+2. Results are ranked by number of matched lines and whether the file is the current one
+3. On click, a new tab is opened and `sessionId / provider / cwd / messageId` are passed to the frontend over the bridge
+4. The frontend matches rendered message nodes by `data-message-uuid`, then `data-message-id`, expanding collapsed history before falling back
 
----
+### Files involved
 
-## License
+| Area | Files |
+|---|---|
+| Index | `util/codeindex/` — `EditSnippetExtractor` (extraction), `EditSnippetIndexer` (SQLite), `ClaudeSnippetIndexBuilder` (build), `SnippetIndexHolder` (scheduling), `SnippetSearchService` (search) |
+| Interaction | `action/editor/FindAiHistoryAction` (entry point + popup), `ProjectPickerDialog` (project multi-select), `AgentType` (agent enum) |
+| Frontend | `webview/src/utils/messageFocus.ts` (locating), `App.tsx` (bridge wiring), `styles/app.less` (highlight styles) |
+| Registration | `plugin.xml` — the action and the status bar widget strings |
 
-MIT
+## 7. Compatibility and Blast Radius
 
----
+- **No existing code path is modified.** One action and a set of bundle strings are added in `plugin.xml`.
+- The index lives in its own database; deleting `~/.codemoss/edit_snippets.db` resets it completely.
+- Indexing runs off the EDT, so the only cost at project open is one incremental scan.
 
-## Contributing
+## 8. Testing
 
-Thanks to all contributors who help make IDEA-Claude-Code-GUI better!
+- **Unit tests** — the `messageFocus` locating logic (UUID priority, id fallback, last resort, tool-block expansion) and `EditSnippetExtractor` / `EditSnippetIndexer` extraction and persistence
+- **Build** — `./gradlew buildPlugin` passes, including checkstyle
+- **Manual** — verified across a real multi-project setup: cross-project search, agent switching, jumping and highlighting
 
-<a href="https://github.com/zhukunpenglinyutong/jetbrains-cc-gui/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=zhukunpenglinyutong/jetbrains-cc-gui" alt="Contributors" />
-</a>
+## 9. Possible Follow-ups (out of scope for this proposal)
 
----
-
-## Sponsor
-
-If this project is helpful to you, you can invite the author to have a KFC or a cup of coffee~
-
-如果这个项目对你有帮助，想请作者吃顿肯德基（KFC）或者喝杯咖啡，都是可以的~
-
-[View Sponsors List →](./SPONSORS.md)
-
----
-
-## Friendship Link
-
-Thanks for the support and feedback from the friends at [LINUX DO](https://linux.do/). 
-
-Thank you for [AtomGit](https://atomgit.com/zhukunpenglinyutong/idea-claude-code-gui) platform G-Star certification
-
----
-
-## Acknowledgements
-
-Recently, many bloggers have recommended this project on their own initiative, and I am deeply grateful. Thanks again to bloggers including "沉默的王二", "macrozheng", "JavaGuide", "Java知音", "鲲鹏talk 公众号", and "程序员青戈" for recommending this project. I will keep iterating to make it more comfortable for everyone to use.
-
----
-
-## Star History
-
-[![Star History](https://star-history.dera.page/svg?repos=zhukunpenglinyutong/jetbrains-cc-gui&type=date&legend=top-left)](https://star-history.dera.page/#zhukunpenglinyutong/jetbrains-cc-gui&type=date&legend=top-left)
-
-<!-- LINK GROUP -->
-
-[github-contributors-shield]: https://img.shields.io/github/contributors/zhukunpenglinyutong/idea-claude-code-gui?color=c4f042&labelColor=black&style=flat-square
-[github-forks-shield]: https://img.shields.io/github/forks/zhukunpenglinyutong/idea-claude-code-gui?color=8ae8ff&labelColor=black&style=flat-square
-[github-issues-link]: https://github.com/zhukunpenglinyutong/idea-claude-code-gui/issues
-[github-issues-shield]: https://img.shields.io/github/issues/zhukunpenglinyutong/idea-claude-code-gui?color=ff80eb&labelColor=black&style=flat-square
-[github-license-link]: https://github.com/zhukunpenglinyutong/idea-claude-code-gui/blob/main/LICENSE
-[github-stars-shield]: https://img.shields.io/github/stars/zhukunpenglinyutong/idea-claude-code-gui?color=ffcb47&labelColor=black&style=flat-square
-[github-mit]: https://img.shields.io/badge/github-MIT-blue?logo=github
+- Show a short before/after diff in the search results themselves
+- Reverse direction: from a message, mark which files and lines it changed
+- Optionally exclude certain projects or sessions from indexing
