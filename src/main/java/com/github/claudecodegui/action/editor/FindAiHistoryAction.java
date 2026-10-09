@@ -183,12 +183,12 @@ public class FindAiHistoryAction extends AnAction implements DumbAware {
             if (selectedAgentHolder.get() == null) {
                 return; // No agent selected - projects are not available.
             }
-            chooseProjects(project, basePath, new ArrayList<>(scope), selectedRoots -> {
-                scope.clear();
-                scope.addAll(selectedRoots);
-                scopeLabel.setText(buildScopeText(basePath, scope));
-                refreshList(model, selectedText, scope, selectedAgentHolder.get());
-            });
+            // Opening the picker steals focus, which dismisses this result popup. Refreshing
+            // the existing JList would therefore fill a window nobody can see — reopen a
+            // fresh popup with the new scope instead. (The agent selector below lives inside
+            // this popup and never dismisses it, so it can refresh in place.)
+            chooseProjects(project, basePath, new ArrayList<>(scope), selectedRoots ->
+                    reopenWithScope(project, editor, selectedText, filePath, basePath, selectedRoots));
         });
 
         // Agent selection change: keep the search, the project list and this popup's
